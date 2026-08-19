@@ -34,8 +34,10 @@ def init_db() -> None:
         status VARCHAR(50) NOT NULL DEFAULT 'RECEBIDA',
         arquivo_loja VARCHAR(500),
         arquivo_entrada VARCHAR(500),
+        arquivo_anapolis VARCHAR(500),
         total_pecas_loja INTEGER NOT NULL DEFAULT 0,
         total_pecas_entrada INTEGER NOT NULL DEFAULT 0,
+        total_pecas_anapolis INTEGER NOT NULL DEFAULT 0,
         diferenca_total INTEGER NOT NULL DEFAULT 0,
         itens_distintos INTEGER NOT NULL DEFAULT 0,
         resultado_conferencia VARCHAR(50),
@@ -99,14 +101,28 @@ def init_db() -> None:
         with conn.cursor() as cur:
             cur.execute(sql)
             cur.execute("ALTER TABLE devolucoes ADD COLUMN IF NOT EXISTS loja VARCHAR(255)")
+            cur.execute("ALTER TABLE devolucoes ADD COLUMN IF NOT EXISTS arquivo_anapolis VARCHAR(500)")
+            cur.execute("ALTER TABLE devolucoes ADD COLUMN IF NOT EXISTS total_pecas_anapolis INTEGER NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE devolucao_itens ADD COLUMN IF NOT EXISTS quantidade_anapolis INTEGER NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE devolucao_conferencias ADD COLUMN IF NOT EXISTS total_pecas_anapolis INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
-def registrar_conferencia(numero_documento, data_documento, arquivo_loja, arquivo_entrada, resultado, total_pecas_loja, total_pecas_entrada, cliente="", loja="") -> int:
-    total_anapolis = sum(int(item.get("qtd_anapolis", 0)) for item in resultado)
-    diferenca_total = total_pecas_entrada + total_anapolis - total_pecas_loja
+def registrar_conferencia(
+    numero_documento,
+    data_documento,
+    arquivo_loja,
+    arquivo_entrada,
+    arquivo_anapolis,
+    resultado,
+    total_pecas_loja,
+    total_pecas_entrada,
+    total_pecas_anapolis,
+    cliente="",
+    loja="",
+) -> int:
+    total_anapolis = int(total_pecas_anapolis or 0)
+    diferenca_total = int(total_pecas_entrada or 0) + total_anapolis - int(total_pecas_loja or 0)
     itens_distintos = len(resultado)
     tem_divergencia = any(item.get("status") != "OK" for item in resultado)
     status = "DIVERGENTE" if tem_divergencia else "AGUARDANDO TRATAMENTO"
@@ -115,8 +131,17 @@ def registrar_conferencia(numero_documento, data_documento, arquivo_loja, arquiv
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM devolucoes WHERE numero_documento = %s AND COALESCE(arquivo_loja, '') = %s AND COALESCE(arquivo_entrada, '') = %s ORDER BY id DESC LIMIT 1",
-                (numero_documento, arquivo_loja, arquivo_entrada),
+                """
+                SELECT id
+                FROM devolucoes
+                WHERE numero_documento = %s
+                  AND COALESCE(arquivo_loja, '') = %s
+                  AND COALESCE(arquivo_entrada, '') = %s
+                  AND COALESCE(arquivo_anapolis, '') = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (numero_documento, arquivo_loja, arquivo_entrada, arquivo_anapolis),
             )
             existente = cur.fetchone()
             if existente:
@@ -126,14 +151,31 @@ def registrar_conferencia(numero_documento, data_documento, arquivo_loja, arquiv
                 """
                 INSERT INTO devolucoes (
                     numero_documento, data_documento, cliente, loja, tipo, status, criado_em,
-                    arquivo_loja, arquivo_entrada, total_pecas_loja, total_pecas_entrada,
+                    arquivo_loja, arquivo_entrada, arquivo_anapolis,
+                    total_pecas_loja, total_pecas_entrada, total_pecas_anapolis,
                     diferenca_total, itens_distintos, resultado_conferencia, registrado_em
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id
                 """,
-                (numero_documento, data_documento or None, cliente, loja, "DEVOLUÇÃO", status, agora,
-                 arquivo_loja, arquivo_entrada, total_pecas_loja, total_pecas_entrada,
-                 diferenca_total, itens_distintos, "DIVERGENTE" if tem_divergencia else "OK", agora),
+                (
+                    numero_documento,
+                    data_documento or None,
+                    cliente,
+                    loja,
+                    "DEVOLUÇÃO",
+                    status,
+                    agora,
+                    arquivo_loja,
+                    arquivo_entrada,
+                    arquivo_anapolis,
+                    total_pecas_loja,
+                    total_pecas_entrada,
+                    total_anapolis,
+                    diferenca_total,
+                    itens_distintos,
+                    "DIVERGENTE" if tem_divergencia else "OK",
+                    agora,
+                ),
             )
             devolucao_id = int(cur.fetchone()["id"])
 
@@ -147,10 +189,19 @@ def registrar_conferencia(numero_documento, data_documento, arquivo_loja, arquiv
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     [
-                        (devolucao_id, item.get("codigo_barras", ""), item.get("referencia", ""),
-                         item.get("descricao", ""), item.get("grade", ""), int(item.get("qtd_loja", 0)),
-                         int(item.get("qtd_entrada", 0)), int(item.get("qtd_anapolis", 0)),
-                         int(item.get("diferenca", 0)), item.get("status", ""), item.get("observacao", ""))
+                        (
+                            devolucao_id,
+                            item.get("codigo_barras", ""),
+                            item.get("referencia", ""),
+                            item.get("descricao", ""),
+                            item.get("grade", ""),
+                            int(item.get("qtd_loja", 0)),
+                            int(item.get("qtd_entrada", 0)),
+                            int(item.get("qtd_anapolis", 0)),
+                            int(item.get("diferenca", 0)),
+                            item.get("status", ""),
+                            item.get("observacao", ""),
+                        )
                         for item in resultado
                     ],
                 )
@@ -166,8 +217,21 @@ def registrar_conferencia(numero_documento, data_documento, arquivo_loja, arquiv
                     total_pecas_anapolis, diferenca_total, observacao, conferido_em
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
-                (devolucao_id, "", status, itens_distintos, itens_ok, itens_faltou, itens_excesso,
-                 total_pecas_loja, total_pecas_entrada, total_anapolis, diferenca_total, "", agora),
+                (
+                    devolucao_id,
+                    "",
+                    status,
+                    itens_distintos,
+                    itens_ok,
+                    itens_faltou,
+                    itens_excesso,
+                    total_pecas_loja,
+                    total_pecas_entrada,
+                    total_anapolis,
+                    diferenca_total,
+                    "",
+                    agora,
+                ),
             )
         conn.commit()
     return devolucao_id
