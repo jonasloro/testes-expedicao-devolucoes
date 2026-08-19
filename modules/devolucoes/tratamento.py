@@ -126,7 +126,7 @@ def salvar_tratamentos_em_lote(devolucao_id: int, lancamentos: list[dict]) -> No
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT total_pecas_entrada FROM devolucoes WHERE id = %s",
+                "SELECT total_pecas_entrada, total_pecas_anapolis FROM devolucoes WHERE id = %s",
                 (devolucao_id,),
             )
             devolucao = cur.fetchone()
@@ -135,15 +135,19 @@ def salvar_tratamentos_em_lote(devolucao_id: int, lancamentos: list[dict]) -> No
 
             cur.execute(
                 """
-                SELECT id, quantidade_entrada
+                SELECT id, quantidade_entrada, quantidade_anapolis
                 FROM devolucao_itens
                 WHERE devolucao_id = %s
                   AND id = ANY(%s)
                 """,
                 (devolucao_id, item_ids),
             )
+            # O total disponível para tratativa é o total ENCONTRADO do item
+            # (Entrada CD + Entrada Anápolis), não só a Entrada CD — senão
+            # peças que só vieram no romaneio de Anápolis nunca poderiam ser
+            # tratadas.
             itens_db = {
-                int(row["id"]): int(row["quantidade_entrada"] or 0)
+                int(row["id"]): int(row["quantidade_entrada"] or 0) + int(row["quantidade_anapolis"] or 0)
                 for row in cur.fetchall()
             }
 
@@ -204,10 +208,10 @@ def salvar_tratamentos_em_lote(devolucao_id: int, lancamentos: list[dict]) -> No
                 (devolucao_id,),
             )
             total_tratada = int(cur.fetchone()["tratada"] or 0)
-            total_entrada = int(devolucao["total_pecas_entrada"] or 0)
+            total_encontrado = int(devolucao["total_pecas_entrada"] or 0) + int(devolucao["total_pecas_anapolis"] or 0)
             novo_status = (
                 "CONCLUÍDA"
-                if total_tratada >= total_entrada
+                if total_tratada >= total_encontrado
                 else "AGUARDANDO TRATAMENTO"
             )
 
