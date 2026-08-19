@@ -1,8 +1,27 @@
 import os
-from datetime import datetime
+from datetime import date, datetime
 
 import psycopg
 from psycopg.rows import dict_row
+
+
+def normalizar_data(valor):
+    """Converte datas brasileiras ou ISO para date do Python."""
+    if valor is None or valor == "":
+        return None
+    if isinstance(valor, datetime):
+        return valor.date()
+    if isinstance(valor, date):
+        return valor
+
+    texto = str(valor).strip()
+    for formato in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(texto, formato).date()
+        except ValueError:
+            continue
+
+    raise ValueError(f"Data inválida: {valor!r}. Use DD/MM/YYYY ou YYYY-MM-DD.")
 
 
 def get_database_url() -> str:
@@ -121,6 +140,7 @@ def registrar_conferencia(
     cliente="",
     loja="",
 ) -> int:
+    data_documento = normalizar_data(data_documento)
     total_anapolis = int(total_pecas_anapolis or 0)
     diferenca_total = int(total_pecas_entrada or 0) + total_anapolis - int(total_pecas_loja or 0)
     itens_distintos = len(resultado)
@@ -154,12 +174,13 @@ def registrar_conferencia(
                     arquivo_loja, arquivo_entrada, arquivo_anapolis,
                     total_pecas_loja, total_pecas_entrada, total_pecas_anapolis,
                     diferenca_total, itens_distintos, resultado_conferencia, registrado_em
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                )
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id
                 """,
                 (
                     numero_documento,
-                    data_documento or None,
+                    data_documento,
                     cliente,
                     loja,
                     "DEVOLUÇÃO",
@@ -186,7 +207,8 @@ def registrar_conferencia(
                         devolucao_id, codigo_barras, referencia, descricao, grade,
                         quantidade_loja, quantidade_entrada, quantidade_anapolis,
                         diferenca, status, observacao
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     [
                         (
@@ -215,7 +237,8 @@ def registrar_conferencia(
                     devolucao_id, usuario, status, total_itens, itens_ok, itens_faltou,
                     itens_excesso, total_pecas_loja, total_pecas_entrada,
                     total_pecas_anapolis, diferenca_total, observacao, conferido_em
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                )
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     devolucao_id,
