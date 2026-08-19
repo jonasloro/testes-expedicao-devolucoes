@@ -87,57 +87,133 @@ def listar_tratamentos(devolucao_id: int):
 
 
 def salvar_tratamentos_em_lote(devolucao_id: int, lancamentos: list[dict]) -> None:
+    """Grava um lote de tratativas com poucas consultas ao PostgreSQL.
+
+    Antes esta rotina fazia duas consultas para cada item selecionado. Em lotes
+    grandes isso gerava centenas de round-trips ao Neon e fazia a tela parecer
+    travada. Agora os itens e os tratamentos existentes são carregados em uma
+    única rodada, validados em memória e inseridos em massa.
+    """
     if not lancamentos:
         raise ValueError("Nenhuma tratativa foi informada.")
 
+    normalizados = []
+    for lanc in lancamentos:
+        item_id = int(lanc["devolucao_item_id"])
+        quantidade = int(lanc["quantidade"])
+        destino = str(lanc["destino"]).strip()
+        observacao = str(lanc.get("observacao", "")).strip()
+
+        if quantidade <= 0:
+            continue
+        if destino not in DESTINOS:
+            raise ValueError(f"Destino inválido: {destino}")
+
+        normalizados.append(
+            {
+                "item_id": item_id,
+                "quantidade": quantidade,
+                "destino": destino,
+                "observacao": observacao,
+            }
+        )
+
+    if not normalizados:
+        raise ValueError("Nenhuma quantidade válida foi informada.")
+
+    item_ids = [lanc["item_id"] for lanc in normalizados]
+
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT total_pecas_entrada FROM devolucoes WHERE id = %s", (devolucao_id,))
+            cur.execute(
+                "SELECT total_pecas_entrada FROM devolucoes WHERE id = %s",
+                (devolucao_id,),
+            )
             devolucao = cur.fetchone()
             if not devolucao:
                 raise ValueError("Devolução não encontrada.")
 
-            for lanc in lancamentos:
-                item_id = int(lanc["devolucao_item_id"])
-                quantidade = int(lanc["quantidade"])
-                destino = str(lanc["destino"]).strip()
-                observacao = str(lanc.get("observacao", "")).strip()
+            cur.execute(
+                """
+                SELECT id, quantidade_entrada
+                FROM devolucao_itens
+                WHERE devolucao_id = %s
+                  AND id = ANY(%s)
+                """,
+                (devolucao_id, item_ids),
+            )
+            itens_db = {
+                int(row["id"]): int(row["quantidade_entrada"] or 0)
+                for row in cur.fetchall()
+            }
 
-                if quantidade <= 0:
-                    continue
-                if destino not in DESTINOS:
-                    raise ValueError(f"Destino inválido: {destino}")
-
-                cur.execute(
-                    "SELECT quantidade_entrada FROM devolucao_itens WHERE id = %s AND devolucao_id = %s",
-                    (item_id, devolucao_id),
-                )
-                item = cur.fetchone()
-                if not item:
-                    raise ValueError("Item da devolução não encontrado.")
-
-                cur.execute(
-                    "SELECT COALESCE(SUM(quantidade), 0) AS tratada FROM devolucao_tratamentos WHERE devolucao_item_id = %s",
-                    (item_id,),
-                )
-                tratada = int(cur.fetchone()["tratada"])
-                restante = int(item["quantidade_entrada"] or 0) - tratada
-                if quantidade > restante:
-                    raise ValueError(
-                        f"Quantidade informada para o item {item_id} excede o restante ({restante})."
-                    )
-
-                cur.execute(
-                    "INSERT INTO devolucao_tratamentos (devolucao_id, devolucao_item_id, quantidade, destino, observacao) VALUES (%s,%s,%s,%s,%s)",
-                    (devolucao_id, item_id, quantidade, destino, observacao),
+            faltantes = [item_id for item_id in item_ids if item_id not in itens_db]
+            if faltantes:
+                raise ValueError(
+                    "Itens da devolução não encontrados: "
+                    + ", ".join(map(str, faltantes[:10]))
                 )
 
             cur.execute(
-                "SELECT COALESCE(SUM(quantidade), 0) AS tratada FROM devolucao_tratamentos WHERE devolucao_id = %s",
+                """
+                SELECT devolucao_item_id, COALESCE(SUM(quantidade), 0) AS tratada
+                FROM devolucao_tratamentos
+                WHERE devolucao_id = %s
+                  AND devolucao_item_id = ANY(%s)
+                GROUP BY devolucao_item_id
+                """,
+                (devolucao_id, item_ids),
+            )
+            ja_tratadas = {
+                int(row["devolucao_item_id"]): int(row["tratada"] or 0)
+                for row in cur.fetchall()
+            }
+
+            for lanc in normalizados:
+                item_id = lanc["item_id"]
+                restante = itens_db[item_id] - ja_tratadas.get(item_id, 0)
+                if lanc["quantidade"] > restante:
+                    raise ValueError(
+                        f"A quantidade do item {item_id} excede o restante ({restante})."
+                    )
+
+            cur.executemany(
+                """
+                INSERT INTO devolucao_tratamentos
+                    (devolucao_id, devolucao_item_id, quantidade, destino, observacao)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        devolucao_id,
+                        lanc["item_id"],
+                        lanc["quantidade"],
+                        lanc["destino"],
+                        lanc["observacao"],
+                    )
+                    for lanc in normalizados
+                ],
+            )
+
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(quantidade), 0) AS tratada
+                FROM devolucao_tratamentos
+                WHERE devolucao_id = %s
+                """,
                 (devolucao_id,),
             )
-            total_tratada = int(cur.fetchone()["tratada"])
+            total_tratada = int(cur.fetchone()["tratada"] or 0)
             total_entrada = int(devolucao["total_pecas_entrada"] or 0)
-            novo_status = "CONCLUÍDA" if total_tratada >= total_entrada else "AGUARDANDO TRATAMENTO"
-            cur.execute("UPDATE devolucoes SET status = %s WHERE id = %s", (novo_status, devolucao_id))
+            novo_status = (
+                "CONCLUÍDA"
+                if total_tratada >= total_entrada
+                else "AGUARDANDO TRATAMENTO"
+            )
+
+            cur.execute(
+                "UPDATE devolucoes SET status = %s WHERE id = %s",
+                (novo_status, devolucao_id),
+            )
+
         conn.commit()
