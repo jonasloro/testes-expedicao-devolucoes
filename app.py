@@ -1,6 +1,7 @@
+from datetime import date
+
 import pandas as pd
 import streamlit as st
-from datetime import date
 
 from modules.devolucoes.database import (
     buscar_itens_devolucao,
@@ -21,10 +22,29 @@ preparar_banco()
 st.title("📦 Centro de Tratamento de Devoluções")
 st.caption("Ambiente isolado de testes — nenhuma lógica do aplicativo oficial é alterada aqui.")
 
+LOJAS = [
+    "01 - Curitiba Prime",
+    "02 - Ponta Grossa Brands",
+    "03 - Joinville Brands",
+    "04 - Porto Aux",
+    "05 - Porto Praia",
+    "06 - Campinas Cambui",
+    "07 - Caxias Porto",
+    "08 - Campos Outlet",
+    "09 - Brasilia Distrito",
+    "10 - Camboriú Brands",
+    "11 - Cascavel Distrito",
+    "12 - Prime Bigorrilho",
+    "13 - Iguaçu Distrito",
+    "14 - Santos Outlet",
+    "15 - Sampa Outlet",
+]
+
 for key, value in {
     "comparacao": None,
     "loja": None,
     "entrada": None,
+    "loja_selecionada": None,
     "registrado_id": None,
 }.items():
     if key not in st.session_state:
@@ -40,6 +60,7 @@ pages = {
     "📊 Indicadores": "indicadores",
     "⚙️ Configurações": "configuracoes",
 }
+
 selecao = st.sidebar.radio("Centro de Devoluções", list(pages.keys()))
 parser = ParserRomaneio()
 
@@ -47,27 +68,49 @@ if pages[selecao] == "dashboard":
     st.header("Dashboard")
     registros = listar_devolucoes()
     st.info("Fluxo: romaneio da loja + romaneio da entrada → conferência → registro histórico.")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Devoluções registradas", len(registros))
     c2.metric("Conferidas", sum(1 for r in registros if r["status"] == "CONFERIDA"))
     c3.metric("Divergentes", sum(1 for r in registros if r["status"] == "DIVERGENTE"))
+    c4.metric("Lojas com registros", len({r["loja"] for r in registros if r.get("loja")}))
 
 elif pages[selecao] == "recebimento":
     st.header("📥 Recebimento da devolução")
-    st.write("Envie os dois documentos. Nada é lançado no estoque nesta etapa.")
+    st.write("Selecione a loja e envie os dois documentos. Nada é lançado no estoque nesta etapa.")
+
+    loja_selecionada = st.selectbox(
+        "Loja da devolução",
+        ["Selecione uma loja"] + LOJAS,
+        index=(LOJAS.index(st.session_state.loja_selecionada) + 1)
+        if st.session_state.loja_selecionada in LOJAS
+        else 0,
+        key="recebimento_loja",
+    )
+
+    if loja_selecionada != "Selecione uma loja":
+        st.session_state.loja_selecionada = loja_selecionada
+
     col1, col2 = st.columns(2)
     with col1:
         pdf_loja = st.file_uploader(
-            "1. Romaneio enviado pela loja", type=["pdf"], key="pdf_loja"
+            "1. Romaneio enviado pela loja",
+            type=["pdf"],
+            key="pdf_loja",
         )
     with col2:
         pdf_entrada = st.file_uploader(
-            "2. Romaneio da entrada no CD", type=["pdf"], key="pdf_entrada"
+            "2. Romaneio da entrada no CD",
+            type=["pdf"],
+            key="pdf_entrada",
         )
 
-    if pdf_loja and pdf_entrada and st.button(
-        "🔎 Ler e comparar os dois romaneios", type="primary"
-    ):
+    pode_comparar = (
+        loja_selecionada != "Selecione uma loja"
+        and pdf_loja is not None
+        and pdf_entrada is not None
+    )
+
+    if pode_comparar and st.button("🔎 Ler e comparar os dois romaneios", type="primary"):
         with st.spinner("Lendo os documentos..."):
             try:
                 resultado_loja = parser.analisar(pdf_loja.getvalue())
@@ -75,7 +118,8 @@ elif pages[selecao] == "recebimento":
                 st.session_state.loja = resultado_loja
                 st.session_state.entrada = resultado_entrada
                 st.session_state.comparacao = comparar_documentos(
-                    resultado_loja, resultado_entrada
+                    resultado_loja,
+                    resultado_entrada,
                 )
                 st.session_state.registrado_id = None
                 st.success("Documentos lidos e comparação criada.")
@@ -89,9 +133,11 @@ elif pages[selecao] == "recebimento":
             "Documento loja",
             st.session_state.loja["cabecalho"].get("numero_documento") or "—",
         )
-        c2.metric("Peças loja", st.session_state.loja["total_pecas"])
-        c3.metric("Peças entrada", st.session_state.entrada["total_pecas"])
-        c4.metric("Itens distintos", len(st.session_state.comparacao or []))
+        c2.metric("Loja", st.session_state.loja_selecionada or "—")
+        c3.metric("Peças loja", st.session_state.loja["total_pecas"])
+        c4.metric("Peças entrada", st.session_state.entrada["total_pecas"])
+
+        st.metric("Itens distintos", len(st.session_state.comparacao or []))
 
         if st.session_state.registrado_id:
             st.success(
@@ -127,6 +173,7 @@ elif pages[selecao] == "recebimento":
                         resultado=st.session_state.comparacao or [],
                         total_pecas_loja=st.session_state.loja["total_pecas"],
                         total_pecas_entrada=st.session_state.entrada["total_pecas"],
+                        loja=st.session_state.loja_selecionada or "",
                     )
                     st.success(
                         "Devolução registrada com sucesso. Nenhuma movimentação de estoque foi realizada."
@@ -172,7 +219,7 @@ elif pages[selecao] == "historico":
         st.info("Nenhuma devolução foi registrada ainda.")
     else:
         st.subheader("Filtros")
-        f1, f2, f3, f4 = st.columns([1.4, 1.2, 1.2, 1.4])
+        f1, f2, f3, f4 = st.columns([1.3, 1.3, 1.2, 1.2])
 
         busca_documento = f1.text_input(
             "Documento",
@@ -180,11 +227,22 @@ elif pages[selecao] == "historico":
             key="historico_busca_documento",
         ).strip()
 
+        lojas_registradas = sorted(
+            {str(r["loja"]) for r in registros if r.get("loja")}
+        )
+        filtro_loja = f2.selectbox(
+            "Loja",
+            ["Todas"] + lojas_registradas,
+            key="historico_loja",
+        )
+
         status_options = ["Todos"] + sorted(
             {str(r["status"]) for r in registros if r["status"]}
         )
-        filtro_status = f2.selectbox(
-            "Status", status_options, key="historico_status"
+        filtro_status = f3.selectbox(
+            "Status",
+            status_options,
+            key="historico_status",
         )
 
         datas_validas = []
@@ -193,17 +251,20 @@ elif pages[selecao] == "historico":
             if valor:
                 try:
                     datas_validas.append(
-                        value if False else (valor if isinstance(valor, date) else date.fromisoformat(str(valor)))
+                        valor
+                        if isinstance(valor, date)
+                        else date.fromisoformat(str(valor))
                     )
                 except (TypeError, ValueError):
                     pass
 
-        data_inicial = f3.date_input(
+        data_inicial = f4.date_input(
             "Data inicial",
             value=min(datas_validas) if datas_validas else date.today(),
             key="historico_data_inicial",
         )
-        data_final = f4.date_input(
+
+        data_final = st.date_input(
             "Data final",
             value=max(datas_validas) if datas_validas else date.today(),
             key="historico_data_final",
@@ -211,97 +272,110 @@ elif pages[selecao] == "historico":
 
         if data_inicial > data_final:
             st.error("A data inicial não pode ser maior que a data final.")
+            data_inicial, data_final = data_final, data_inicial
+
+        filtrados = []
+        for r in registros:
+            documento = str(r["numero_documento"] or "")
+            loja_registro = str(r["loja"] or "")
+
+            if busca_documento and busca_documento.lower() not in documento.lower():
+                continue
+            if filtro_loja != "Todas" and loja_registro != filtro_loja:
+                continue
+            if filtro_status != "Todos" and str(r["status"]) != filtro_status:
+                continue
+
+            data_registro = r["data_documento"]
+            try:
+                data_registro = (
+                    data_registro
+                    if isinstance(data_registro, date)
+                    else date.fromisoformat(str(data_registro))
+                )
+            except (TypeError, ValueError):
+                data_registro = None
+
+            if data_registro and not (data_inicial <= data_registro <= data_final):
+                continue
+
+            filtrados.append(r)
+
+        st.subheader("Resumo")
+        total_pecas_loja = sum(r["total_pecas_loja"] or 0 for r in filtrados)
+        total_pecas_entrada = sum(r["total_pecas_entrada"] or 0 for r in filtrados)
+        divergentes = sum(1 for r in filtrados if r["status"] == "DIVERGENTE")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Devoluções", len(filtrados))
+        c2.metric("Peças loja", total_pecas_loja)
+        c3.metric("Peças entrada", total_pecas_entrada)
+        c4.metric("Divergentes", divergentes)
+
+        if not filtrados:
+            st.warning("Nenhuma devolução corresponde aos filtros selecionados.")
         else:
-            filtrados = []
-            for r in registros:
-                documento = str(r["numero_documento"] or "")
-                if busca_documento and busca_documento.lower() not in documento.lower():
-                    continue
+            dados = [
+                {
+                    "ID": r["id"],
+                    "Loja": r["loja"] or "—",
+                    "Documento": r["numero_documento"],
+                    "Data": (
+                        r["data_documento"].strftime("%d/%m/%Y")
+                        if isinstance(r["data_documento"], date)
+                        else r["data_documento"]
+                    ),
+                    "Status": r["status"],
+                    "Peças loja": r["total_pecas_loja"] or 0,
+                    "Peças entrada": r["total_pecas_entrada"] or 0,
+                    "Diferença": r["diferenca_total"] or 0,
+                    "Itens distintos": r["itens_distintos"] or 0,
+                    "Registrado em": r["registrado_em"] or r["criado_em"],
+                }
+                for r in filtrados
+            ]
+            st.dataframe(
+                pd.DataFrame(dados),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-                if filtro_status != "Todos" and str(r["status"]) != filtro_status:
-                    continue
-
-                data_registro = r["data_documento"]
-                try:
-                    data_registro = (
-                        data_registro
-                        if isinstance(data_registro, date)
-                        else date.fromisoformat(str(data_registro))
-                    )
-                except (TypeError, ValueError):
-                    data_registro = None
-
-                if data_registro and not (data_inicial <= data_registro <= data_final):
-                    continue
-
-                filtrados.append(r)
-
-            st.subheader("Resumo")
-            total_pecas_loja = sum(r["total_pecas_loja"] or 0 for r in filtrados)
-            total_pecas_entrada = sum(r["total_pecas_entrada"] or 0 for r in filtrados)
-            divergentes = sum(1 for r in filtrados if r["status"] == "DIVERGENTE")
+            st.subheader("Detalhamento")
+            opcoes = [
+                f"#{r['id']} — {r['loja'] or 'Loja não informada'} — documento {r['numero_documento']}"
+                for r in filtrados
+            ]
+            escolha = st.selectbox(
+                "Selecione uma devolução",
+                opcoes,
+                key="historico_detalhe",
+            )
+            registro = filtrados[opcoes.index(escolha)]
+            registro_id = int(registro["id"])
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Devoluções", len(filtrados))
-            c2.metric("Peças loja", total_pecas_loja)
-            c3.metric("Peças entrada", total_pecas_entrada)
-            c4.metric("Divergentes", divergentes)
+            c1.metric("Documento", registro["numero_documento"])
+            c2.metric("Loja", registro["loja"] or "—")
+            c3.metric("Status", registro["status"])
+            c4.metric("Diferença", registro["diferenca_total"] or 0)
 
-            if not filtrados:
-                st.warning("Nenhuma devolução corresponde aos filtros selecionados.")
+            data_texto = (
+                registro["data_documento"].strftime("%d/%m/%Y")
+                if isinstance(registro["data_documento"], date)
+                else registro["data_documento"] or "—"
+            )
+            st.write(f"**Data:** {data_texto}")
+            st.write(f"**Resultado da conferência:** {registro['resultado_conferencia'] or '—'}")
+            st.write(f"**Romaneio da loja:** {registro['arquivo_loja'] or '—'}")
+            st.write(f"**Romaneio da entrada:** {registro['arquivo_entrada'] or '—'}")
+
+            itens = buscar_itens_devolucao(registro_id)
+            if itens:
+                itens_df = pd.DataFrame([dict(item) for item in itens])
+                st.write(f"**Itens: {len(itens_df)} códigos distintos**")
+                st.dataframe(itens_df, use_container_width=True, hide_index=True)
             else:
-                dados = [
-                    {
-                        "ID": r["id"],
-                        "Documento": r["numero_documento"],
-                        "Data": (
-                            r["data_documento"].strftime("%d/%m/%Y")
-                            if isinstance(r["data_documento"], date)
-                            else r["data_documento"]
-                        ),
-                        "Status": r["status"],
-                        "Peças loja": r["total_pecas_loja"] or 0,
-                        "Peças entrada": r["total_pecas_entrada"] or 0,
-                        "Diferença": r["diferenca_total"] or 0,
-                        "Itens distintos": r["itens_distintos"] or 0,
-                        "Registrado em": r["registrado_em"] or r["criado_em"],
-                    }
-                    for r in filtrados
-                ]
-                st.dataframe(pd.DataFrame(dados), use_container_width=True, hide_index=True)
-
-                st.subheader("Detalhamento")
-                opcoes = [
-                    f"#{r['id']} — documento {r['numero_documento']}"
-                    for r in filtrados
-                ]
-                escolha = st.selectbox("Selecione uma devolução", opcoes, key="historico_detalhe")
-                registro = filtrados[opcoes.index(escolha)]
-                registro_id = int(registro["id"])
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Documento", registro["numero_documento"])
-                c2.metric("Status", registro["status"])
-                c3.metric("Peças loja", registro["total_pecas_loja"] or 0)
-                c4.metric("Peças entrada", registro["total_pecas_entrada"] or 0)
-
-                if isinstance(registro["data_documento"], date):
-                    data_display = registro["data_documento"].strftime("%d/%m/%Y")
-                else:
-                    data_display = registro["data_documento"] or "—"
-
-                st.write(f"**Data:** {data_display}")
-                st.write(f"**Resultado da conferência:** {registro['resultado_conferencia'] or '—'}")
-                st.write(f"**Romaneio da loja:** {registro['arquivo_loja'] or '—'}")
-                st.write(f"**Romaneio da entrada:** {registro['arquivo_entrada'] or '—'}")
-
-                itens = buscar_itens_devolucao(registro_id)
-                if itens:
-                    itens_df = pd.DataFrame([dict(item) for item in itens])
-                    st.write(f"**Itens: {len(itens_df)} códigos distintos**")
-                    st.dataframe(itens_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Esta devolução não possui itens registrados.")
+                st.info("Esta devolução não possui itens registrados.")
 
 elif pages[selecao] == "indicadores":
     st.header("📊 Indicadores")
