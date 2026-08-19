@@ -14,10 +14,27 @@ class ParserRomaneio:
     HEADER_TIPO = "DEVOLUÇÃO"
 
     _ITEM_START_RE = re.compile(r"^\d{10,14}(?:\s|$)")
+
+    # Regra principal: exige o "]" de fechamento da grade. Isso é
+    # fundamental quando a grade é numérica (ex.: "[38 40 42]", grades de
+    # calça/sapato) — com o "]" opcional, o regex parava de ler a grade no
+    # primeiro número seguido de espaço e confundia números da própria
+    # grade com a quantidade e o preço do item, gerando falsas divergências.
+    # Como o bloco inteiro do item é unido em uma única string antes da
+    # busca (ver extrair_itens), o "[" e o "]" podem estar em linhas
+    # diferentes do PDF original sem prejudicar o casamento.
     _ITEM_DATA_RE = re.compile(
-        r"\[(?P<grade>[^\]]*?)\]?\s+"
+        r"\[(?P<grade>[^\]]*)\]\s*"
         r"(?P<quantidade>\d+)\s+"
         r"(?P<preco>[\d.,]+)"
+    )
+
+    # Reserva para romaneios em que o "]" de fechamento realmente não existe
+    # no texto extraído do PDF. Só é usado se a regra principal não casar.
+    _ITEM_DATA_FALLBACK_RE = re.compile(
+        r"\[(?P<grade>[^\]]*)"
+        r"(?P<quantidade>\d+)\s+"
+        r"(?P<preco>[\d.,]+)\s*$"
     )
 
     def extrair_texto(self, pdf_bytes: bytes) -> str:
@@ -65,20 +82,18 @@ class ParserRomaneio:
                 continue
 
             codigo = codigo_match.group(1)
-            dados = None
-            linha_dados = ""
 
-            # O layout real pode quebrar a descrição em várias linhas e até
-            # omitir o fechamento de ] na grade. Procuramos os dados em cada
-            # linha do bloco, sem exigir que tudo esteja na mesma linha do
-            # código de barras.
-            for linha in bloco:
-                match = self._ITEM_DATA_RE.search(linha)
-                if match:
-                    dados = match
-                    linha_dados = linha
-                    break
+            # O layout real pode quebrar código de barras, referência,
+            # descrição e grade em linhas diferentes. Por isso o bloco
+            # inteiro do item é unido numa única string antes de procurar
+            # a grade/quantidade/preço — não basta procurar linha a linha,
+            # senão um "[" numa linha e o "]" na linha seguinte nunca
+            # seriam encontrados juntos.
+            bloco_unido = self._limpar_campo(" ".join(bloco))
 
+            dados = self._ITEM_DATA_RE.search(bloco_unido)
+            if dados is None:
+                dados = self._ITEM_DATA_FALLBACK_RE.search(bloco_unido)
             if dados is None:
                 continue
 
