@@ -5,78 +5,121 @@ import psycopg
 from psycopg.rows import dict_row
 
 
+
 def get_database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()
     if not url:
         try:
             import streamlit as st
+
             url = str(st.secrets.get("DATABASE_URL", "")).strip()
         except Exception:
             url = ""
+
     if not url:
         raise RuntimeError(
-            "DATABASE_URL não configurada. Adicione a connection string do Neon nos Secrets do Streamlit."
+            "DATABASE_URL não configurada. Adicione a connection string do Neon "
+            "nos Secrets do Streamlit."
         )
+
     return url
+
 
 
 def get_connection():
     return psycopg.connect(get_database_url(), row_factory=dict_row)
 
 
-def _normalizar_data(valor: str | None):
-    """Converte datas brasileiras DD/MM/YYYY para date do PostgreSQL."""
-    if not valor:
-        return None
-    if hasattr(valor, "year"):
-        return valor
-    valor = str(valor).strip()
-    for formato in ("%d/%m/%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(valor, formato).date()
-        except ValueError:
-            pass
-    raise ValueError(f"Data inválida: '{valor}'. Use DD/MM/YYYY ou YYYY-MM-DD.")
-
 
 def init_db() -> None:
+    """Confere e prepara o schema essencial do Neon."""
+    sql = """
+    CREATE TABLE IF NOT EXISTS devolucoes (
+        id BIGSERIAL PRIMARY KEY,
+        numero_documento VARCHAR(100) NOT NULL,
+        data_documento DATE,
+        cliente VARCHAR(255),
+        loja VARCHAR(255),
+        tipo VARCHAR(100) NOT NULL DEFAULT 'DEVOLUÇÃO',
+        status VARCHAR(50) NOT NULL DEFAULT 'RECEBIDA',
+        arquivo_loja VARCHAR(500),
+        arquivo_entrada VARCHAR(500),
+        total_pecas_loja INTEGER NOT NULL DEFAULT 0,
+        total_pecas_entrada INTEGER NOT NULL DEFAULT 0,
+        diferenca_total INTEGER NOT NULL DEFAULT 0,
+        itens_distintos INTEGER NOT NULL DEFAULT 0,
+        resultado_conferencia VARCHAR(50),
+        criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        registrado_em TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS devolucao_itens (
+        id BIGSERIAL PRIMARY KEY,
+        devolucao_id BIGINT NOT NULL REFERENCES devolucoes(id) ON DELETE CASCADE,
+        codigo_barras VARCHAR(50) NOT NULL,
+        referencia VARCHAR(255),
+        descricao TEXT,
+        grade VARCHAR(255),
+        quantidade_loja INTEGER NOT NULL DEFAULT 0,
+        quantidade_entrada INTEGER NOT NULL DEFAULT 0,
+        diferenca INTEGER NOT NULL DEFAULT 0,
+        status VARCHAR(30) NOT NULL DEFAULT 'OK',
+        observacao TEXT,
+        criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS devolucao_conferencias (
+        id BIGSERIAL PRIMARY KEY,
+        devolucao_id BIGINT NOT NULL REFERENCES devolucoes(id) ON DELETE CASCADE,
+        usuario VARCHAR(255),
+        status VARCHAR(50) NOT NULL,
+        total_itens INTEGER NOT NULL DEFAULT 0,
+        itens_ok INTEGER NOT NULL DEFAULT 0,
+        itens_faltou INTEGER NOT NULL DEFAULT 0,
+        itens_excesso INTEGER NOT NULL DEFAULT 0,
+        total_pecas_loja INTEGER NOT NULL DEFAULT 0,
+        total_pecas_entrada INTEGER NOT NULL DEFAULT 0,
+        diferenca_total INTEGER NOT NULL DEFAULT 0,
+        observacao TEXT,
+        conferido_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """
+
     with get_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute(sql)
             cur.execute(
                 """
-                SELECT COUNT(*) AS total
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_name IN ('devolucoes', 'devolucao_itens', 'devolucao_conferencias')
+                ALTER TABLE devolucoes
+                ADD COLUMN IF NOT EXISTS loja VARCHAR(255)
                 """
             )
-            total = int(cur.fetchone()["total"])
-            if total < 3:
-                raise RuntimeError(
-                    "O banco Neon ainda não possui todas as tabelas de devoluções. Execute o SQL de criação no Neon."
-                )
+        conn.commit()
 
 
-def criar_devolucao(devolucao):
+
+def criar_devolucao(devolucao, loja: str = ""):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO devolucoes
-                    (numero_documento, data_documento, cliente, tipo, status, criado_em)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (numero_documento, data_documento, cliente, loja, tipo, status, criado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     devolucao.numero_documento,
-                    _normalizar_data(devolucao.data_documento),
+                    devolucao.data_documento or None,
                     devolucao.cliente,
+                    loja,
                     devolucao.tipo,
                     devolucao.status,
                     devolucao.criado_em,
                 ),
             )
             devolucao_id = int(cur.fetchone()["id"])
+
             if devolucao.itens:
                 cur.executemany(
                     """
@@ -101,8 +144,11 @@ def criar_devolucao(devolucao):
                         for item in devolucao.itens
                     ],
                 )
+
         conn.commit()
+
     return devolucao_id
+
 
 
 def registrar_conferencia(
@@ -114,13 +160,11 @@ def registrar_conferencia(
     total_pecas_loja: int,
     total_pecas_entrada: int,
     cliente: str = "",
+    loja: str = "",
 ) -> int:
     diferenca_total = total_pecas_entrada - total_pecas_loja
     itens_distintos = len(resultado)
-    itens_ok = sum(item.get("status") == "OK" for item in resultado)
-    itens_faltou = sum(item.get("status") == "FALTOU" for item in resultado)
-    itens_excesso = sum(item.get("status") == "EXCESSO" for item in resultado)
-    tem_divergencia = itens_faltou > 0 or itens_excesso > 0
+    tem_divergencia = any(item.get("status") != "OK" for item in resultado)
     status = "DIVERGENTE" if tem_divergencia else "CONFERIDA"
     agora = datetime.now().astimezone()
 
@@ -136,7 +180,7 @@ def registrar_conferencia(
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (numero_documento, arquivo_loja or "", arquivo_entrada or ""),
+                (numero_documento, arquivo_loja, arquivo_entrada),
             )
             existente = cur.fetchone()
             if existente:
@@ -145,17 +189,18 @@ def registrar_conferencia(
             cur.execute(
                 """
                 INSERT INTO devolucoes (
-                    numero_documento, data_documento, cliente, tipo, status, criado_em,
+                    numero_documento, data_documento, cliente, loja, tipo, status, criado_em,
                     arquivo_loja, arquivo_entrada, total_pecas_loja, total_pecas_entrada,
                     diferenca_total, itens_distintos, resultado_conferencia, registrado_em
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     numero_documento,
-                    _normalizar_data(data_documento),
+                    data_documento or None,
                     cliente,
+                    loja,
                     "DEVOLUÇÃO",
                     status,
                     agora,
@@ -175,7 +220,7 @@ def registrar_conferencia(
                 cur.executemany(
                     """
                     INSERT INTO devolucao_itens (
-                        devolucao_id, codigo_barras, descricao, referencia, grade,
+                        devolucao_id, codigo_barras, referencia, descricao, grade,
                         quantidade_loja, quantidade_entrada, diferenca, status, observacao
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -184,8 +229,8 @@ def registrar_conferencia(
                         (
                             devolucao_id,
                             item.get("codigo_barras", ""),
-                            item.get("descricao", ""),
                             item.get("referencia", ""),
+                            item.get("descricao", ""),
                             item.get("grade", ""),
                             int(item.get("qtd_loja", 0)),
                             int(item.get("qtd_entrada", 0)),
@@ -196,6 +241,10 @@ def registrar_conferencia(
                         for item in resultado
                     ],
                 )
+
+            itens_ok = sum(item.get("status") == "OK" for item in resultado)
+            itens_faltou = sum(item.get("status") == "FALTOU" for item in resultado)
+            itens_excesso = sum(item.get("status") == "EXCESSO" for item in resultado)
 
             cur.execute(
                 """
@@ -221,8 +270,11 @@ def registrar_conferencia(
                     agora,
                 ),
             )
+
         conn.commit()
+
     return devolucao_id
+
 
 
 def listar_devolucoes():
@@ -230,6 +282,7 @@ def listar_devolucoes():
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM devolucoes ORDER BY id DESC")
             return cur.fetchall()
+
 
 
 def buscar_itens_devolucao(devolucao_id: int):
