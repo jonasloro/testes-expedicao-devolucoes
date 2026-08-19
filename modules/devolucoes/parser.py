@@ -4,22 +4,24 @@ from typing import Any
 
 
 class ParserRomaneio:
-    """Leitor robusto de romaneios PDF para o laboratório de devoluções."""
+    """Leitor de romaneios PDF para o laboratório de devoluções.
+
+    O leiaute real do romaneio coloca código, descrição, grade, quantidade e
+    preço na mesma linha; depois do preço aparecem outros campos financeiros
+    e/ou a referência, que não devem contaminar a descrição do produto.
+    """
 
     HEADER_TIPO = "DEVOLUÇÃO"
 
-    # O texto extraído de PDFs pode inserir quebras de linha no meio de um item.
-    # Por isso a leitura dos produtos é feita sobre o texto inteiro.
+    # Exemplo real do PDF extraído:
+    # 010447004002 BERMUDA MASCULINA [4.G,AZUL.] 1 40,75 40,750,0033.309...
+    # O trecho depois do preço é ignorado de propósito.
     _ITEM_RE = re.compile(
-        r"(?m)^(?P<codigo>\d{10,14})\s+"
-        r"(?P<corpo>.+?)\s*"
-        r"\[(?P<grade>[^\]]*)\]\s*"
+        r"^(?P<codigo>\d{10,14})\s+"
+        r"(?P<descricao>.*?)\s+"
+        r"\[(?P<grade>[^\]]*)\]\s+"
         r"(?P<quantidade>\d+)\s+"
-        r"(?P<preco>[\d.,]+)\s+"
-        r"(?P<desconto>[\d.,]+)\s+"
-        r"(?P<total>[\d.,]+)"
-        r"(?:\s|$)",
-        flags=re.MULTILINE | re.DOTALL,
+        r"(?P<preco>[\d.,]+)\s+.*$"
     )
 
     def extrair_texto(self, pdf_bytes: bytes) -> str:
@@ -52,25 +54,20 @@ class ParserRomaneio:
 
     def extrair_itens(self, texto: str) -> list[dict[str, Any]]:
         itens: list[dict[str, Any]] = []
-        texto = self._normalizar_texto(texto)
 
-        for match in self._ITEM_RE.finditer(texto):
-            codigo = match.group("codigo").strip()
-            corpo = self._limpar_campo(match.group("corpo"))
-            grade = self._limpar_campo(match.group("grade"))
-            quantidade = int(match.group("quantidade"))
-            preco = self._numero(match.group("preco"))
-
-            referencia, descricao = self._separar_referencia_descricao(corpo)
+        for linha in self._normalizar_linhas(texto):
+            match = self._ITEM_RE.match(linha)
+            if not match:
+                continue
 
             itens.append(
                 {
-                    "codigo_barras": codigo,
-                    "referencia": referencia,
-                    "descricao": descricao,
-                    "grade": grade,
-                    "quantidade": quantidade,
-                    "preco": preco,
+                    "codigo_barras": match.group("codigo").strip(),
+                    "referencia": "",
+                    "descricao": self._limpar_campo(match.group("descricao")),
+                    "grade": self._limpar_campo(match.group("grade")),
+                    "quantidade": int(match.group("quantidade")),
+                    "preco": self._numero(match.group("preco")),
                 }
             )
 
@@ -90,23 +87,18 @@ class ParserRomaneio:
         }
 
     @staticmethod
-    def _normalizar_texto(texto: str) -> str:
-        linhas = []
+    def _normalizar_linhas(texto: str) -> list[str]:
+        linhas: list[str] = []
         for linha in texto.splitlines():
-            linha = re.sub(r"[ \t\f\r]+", " ", linha).strip()
-            linhas.append(linha)
-        return "\n".join(linhas)
+            linha = re.sub(r"[\t\f\r]+", " ", linha)
+            linha = re.sub(r" {2,}", " ", linha).strip()
+            if linha:
+                linhas.append(linha)
+        return linhas
 
     @staticmethod
     def _limpar_campo(valor: str) -> str:
         return re.sub(r"\s+", " ", valor).strip()
-
-    @staticmethod
-    def _separar_referencia_descricao(corpo: str) -> tuple[str, str]:
-        match = re.match(r"(?P<ref>[\d.\-]+)(?P<desc>[A-Za-zÀ-ÿ].*)$", corpo)
-        if match:
-            return match.group("ref"), match.group("desc").strip()
-        return "", corpo.strip()
 
     @staticmethod
     def _numero(valor: str) -> float:
