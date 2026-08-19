@@ -6,22 +6,18 @@ from typing import Any
 class ParserRomaneio:
     """Leitor de romaneios PDF para o laboratório de devoluções.
 
-    O leiaute real do romaneio coloca código, descrição, grade, quantidade e
-    preço na mesma linha; depois do preço aparecem outros campos financeiros
-    e/ou a referência, que não devem contaminar a descrição do produto.
+    O PDF real nem sempre mantém código, descrição, grade e quantidade na
+    mesma linha. O parser trabalha por blocos de item, iniciados pelo código
+    de barras, e procura a grade/quantidade dentro do bloco.
     """
 
     HEADER_TIPO = "DEVOLUÇÃO"
 
-    # Exemplo real do PDF extraído:
-    # 010447004002 BERMUDA MASCULINA [4.G,AZUL.] 1 40,75 40,750,0033.309...
-    # O trecho depois do preço é ignorado de propósito.
-    _ITEM_RE = re.compile(
-        r"^(?P<codigo>\d{10,14})\s+"
-        r"(?P<descricao>.*?)\s+"
-        r"\[(?P<grade>[^\]]*)\]\s+"
+    _ITEM_START_RE = re.compile(r"^\d{10,14}(?:\s|$)")
+    _ITEM_DATA_RE = re.compile(
+        r"\[(?P<grade>[^\]]*?)\]?\s+"
         r"(?P<quantidade>\d+)\s+"
-        r"(?P<preco>[\d.,]+)\s+.*$"
+        r"(?P<preco>[\d.,]+)"
     )
 
     def extrair_texto(self, pdf_bytes: bytes) -> str:
@@ -53,21 +49,51 @@ class ParserRomaneio:
         }
 
     def extrair_itens(self, texto: str) -> list[dict[str, Any]]:
+        linhas = self._normalizar_linhas(texto)
+        inicios = [i for i, linha in enumerate(linhas) if self._ITEM_START_RE.match(linha)]
         itens: list[dict[str, Any]] = []
 
-        for linha in self._normalizar_linhas(texto):
-            match = self._ITEM_RE.match(linha)
-            if not match:
+        for pos, inicio in enumerate(inicios):
+            fim = inicios[pos + 1] if pos + 1 < len(inicios) else len(linhas)
+            bloco = linhas[inicio:fim]
+            if not bloco:
                 continue
+
+            primeira = bloco[0]
+            codigo_match = re.match(r"^(\d{10,14})", primeira)
+            if not codigo_match:
+                continue
+
+            codigo = codigo_match.group(1)
+            dados = None
+            linha_dados = ""
+
+            # O layout real pode quebrar a descrição em várias linhas e até
+            # omitir o fechamento de ] na grade. Procuramos os dados em cada
+            # linha do bloco, sem exigir que tudo esteja na mesma linha do
+            # código de barras.
+            for linha in bloco:
+                match = self._ITEM_DATA_RE.search(linha)
+                if match:
+                    dados = match
+                    linha_dados = linha
+                    break
+
+            if dados is None:
+                continue
+
+            trecho_descricao = " ".join(bloco).split("[", 1)[0]
+            trecho_descricao = re.sub(rf"^\s*{re.escape(codigo)}\s*", "", trecho_descricao)
+            descricao = self._limpar_descricao(trecho_descricao)
 
             itens.append(
                 {
-                    "codigo_barras": match.group("codigo").strip(),
+                    "codigo_barras": codigo,
                     "referencia": "",
-                    "descricao": self._limpar_campo(match.group("descricao")),
-                    "grade": self._limpar_campo(match.group("grade")),
-                    "quantidade": int(match.group("quantidade")),
-                    "preco": self._numero(match.group("preco")),
+                    "descricao": descricao,
+                    "grade": self._limpar_campo(dados.group("grade")),
+                    "quantidade": int(dados.group("quantidade")),
+                    "preco": self._numero(dados.group("preco")),
                 }
             )
 
@@ -99,6 +125,11 @@ class ParserRomaneio:
     @staticmethod
     def _limpar_campo(valor: str) -> str:
         return re.sub(r"\s+", " ", valor).strip()
+
+    @staticmethod
+    def _limpar_descricao(valor: str) -> str:
+        valor = re.sub(r"\s+", " ", valor).strip()
+        return valor
 
     @staticmethod
     def _numero(valor: str) -> float:
