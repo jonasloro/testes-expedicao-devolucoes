@@ -31,18 +31,26 @@ def init_tratamento_db() -> None:
         conn.commit()
 
 
+def preparar_devolucao(devolucao_id: int) -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE devolucoes SET status = 'AGUARDANDO TRATAMENTO' WHERE id = %s AND status = 'CONFERIDA'",
+                (devolucao_id,),
+            )
+        conn.commit()
+
+
 def listar_devolucoes_para_tratamento():
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT d.*,
-                       COALESCE(SUM(t.quantidade), 0) AS pecas_tratadas
+                SELECT d.*, COALESCE(SUM(t.quantidade), 0) AS pecas_tratadas
                 FROM devolucoes d
                 LEFT JOIN devolucao_tratamentos t ON t.devolucao_id = d.id
-                WHERE d.status IN ('AGUARDANDO TRATAMENTO', 'DIVERGENTE')
-                GROUP BY d.id
-                ORDER BY d.id DESC
+                WHERE d.status IN ('AGUARDANDO TRATAMENTO', 'DIVERGENTE', 'CONFERIDA')
+                GROUP BY d.id ORDER BY d.id DESC
                 """
             )
             return cur.fetchall()
@@ -52,12 +60,7 @@ def quantidades_tratadas(devolucao_id: int) -> dict[int, int]:
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT devolucao_item_id, COALESCE(SUM(quantidade), 0) AS quantidade
-                FROM devolucao_tratamentos
-                WHERE devolucao_id = %s
-                GROUP BY devolucao_item_id
-                """,
+                "SELECT devolucao_item_id, COALESCE(SUM(quantidade), 0) AS quantidade FROM devolucao_tratamentos WHERE devolucao_id = %s GROUP BY devolucao_item_id",
                 (devolucao_id,),
             )
             return {int(r["devolucao_item_id"]): int(r["quantidade"]) for r in cur.fetchall()}
@@ -68,11 +71,10 @@ def listar_tratamentos(devolucao_id: int):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT t.*, i.codigo_barras, i.descricao, i.grade
+                SELECT t.*, i.codigo_barras, i.referencia, i.descricao, i.grade
                 FROM devolucao_tratamentos t
                 JOIN devolucao_itens i ON i.id = t.devolucao_item_id
-                WHERE t.devolucao_id = %s
-                ORDER BY t.id DESC
+                WHERE t.devolucao_id = %s ORDER BY t.id DESC
                 """,
                 (devolucao_id,),
             )
@@ -82,7 +84,6 @@ def listar_tratamentos(devolucao_id: int):
 def salvar_tratamentos(devolucao_id: int, lancamentos: list[dict]) -> None:
     if not lancamentos:
         raise ValueError("Nenhum tratamento foi informado.")
-
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT total_pecas_entrada FROM devolucoes WHERE id = %s", (devolucao_id,))
@@ -95,12 +96,10 @@ def salvar_tratamentos(devolucao_id: int, lancamentos: list[dict]) -> None:
                 quantidade = int(lanc["quantidade"])
                 destino = str(lanc["destino"]).upper().strip()
                 observacao = str(lanc.get("observacao", "")).strip()
-
                 if quantidade <= 0:
                     continue
                 if destino not in DESTINOS:
                     raise ValueError(f"Destino inválido: {destino}")
-
                 cur.execute(
                     "SELECT quantidade_entrada FROM devolucao_itens WHERE id = %s AND devolucao_id = %s",
                     (item_id, devolucao_id),
@@ -108,7 +107,6 @@ def salvar_tratamentos(devolucao_id: int, lancamentos: list[dict]) -> None:
                 item = cur.fetchone()
                 if not item:
                     raise ValueError("Item da devolução não encontrado.")
-
                 cur.execute(
                     "SELECT COALESCE(SUM(quantidade), 0) AS tratada FROM devolucao_tratamentos WHERE devolucao_item_id = %s",
                     (item_id,),
@@ -116,16 +114,9 @@ def salvar_tratamentos(devolucao_id: int, lancamentos: list[dict]) -> None:
                 tratada = int(cur.fetchone()["tratada"])
                 restante = int(item["quantidade_entrada"]) - tratada
                 if quantidade > restante:
-                    raise ValueError(
-                        f"A quantidade informada para o item {item_id} excede o restante ({restante})."
-                    )
-
+                    raise ValueError(f"A quantidade informada excede o restante ({restante}).")
                 cur.execute(
-                    """
-                    INSERT INTO devolucao_tratamentos
-                        (devolucao_id, devolucao_item_id, quantidade, destino, observacao)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
+                    "INSERT INTO devolucao_tratamentos (devolucao_id, devolucao_item_id, quantidade, destino, observacao) VALUES (%s, %s, %s, %s, %s)",
                     (devolucao_id, item_id, quantidade, destino, observacao),
                 )
 
