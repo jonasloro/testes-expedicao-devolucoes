@@ -5,39 +5,41 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-
 def get_database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()
     if not url:
         try:
             import streamlit as st
-
             url = str(st.secrets.get("DATABASE_URL", "")).strip()
         except Exception:
             url = ""
-
     if not url:
         raise RuntimeError(
-            "DATABASE_URL não configurada. Adicione a connection string do Neon "
-            "nos Secrets do Streamlit."
+            "DATABASE_URL não configurada. Adicione a connection string do Neon nos Secrets do Streamlit."
         )
-
     return url
-
 
 
 def get_connection():
     return psycopg.connect(get_database_url(), row_factory=dict_row)
 
 
+def _normalizar_data(valor: str | None):
+    """Converte datas brasileiras DD/MM/YYYY para date do PostgreSQL."""
+    if not valor:
+        return None
+    if hasattr(valor, "year"):
+        return valor
+    valor = str(valor).strip()
+    for formato in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(valor, formato).date()
+        except ValueError:
+            pass
+    raise ValueError(f"Data inválida: '{valor}'. Use DD/MM/YYYY ou YYYY-MM-DD.")
+
 
 def init_db() -> None:
-    """Confere se as tabelas essenciais existem no banco Neon.
-
-    O schema principal é criado no SQL Editor do Neon. Mantemos aqui uma
-    checagem simples para produzir um erro amigável caso o banco errado seja
-    configurado no Streamlit.
-    """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -51,8 +53,7 @@ def init_db() -> None:
             total = int(cur.fetchone()["total"])
             if total < 3:
                 raise RuntimeError(
-                    "O banco Neon ainda não possui todas as tabelas de devoluções. "
-                    "Execute o SQL de criação do banco no Neon."
+                    "O banco Neon ainda não possui todas as tabelas de devoluções. Execute o SQL de criação no Neon."
                 )
 
 
@@ -68,7 +69,7 @@ def criar_devolucao(devolucao):
                 """,
                 (
                     devolucao.numero_documento,
-                    devolucao.data_documento or None,
+                    _normalizar_data(devolucao.data_documento),
                     devolucao.cliente,
                     devolucao.tipo,
                     devolucao.status,
@@ -76,7 +77,6 @@ def criar_devolucao(devolucao):
                 ),
             )
             devolucao_id = int(cur.fetchone()["id"])
-
             if devolucao.itens:
                 cur.executemany(
                     """
@@ -101,11 +101,8 @@ def criar_devolucao(devolucao):
                         for item in devolucao.itens
                     ],
                 )
-
         conn.commit()
-
     return devolucao_id
-
 
 
 def registrar_conferencia(
@@ -120,7 +117,10 @@ def registrar_conferencia(
 ) -> int:
     diferenca_total = total_pecas_entrada - total_pecas_loja
     itens_distintos = len(resultado)
-    tem_divergencia = any(item.get("status") != "OK" for item in resultado)
+    itens_ok = sum(item.get("status") == "OK" for item in resultado)
+    itens_faltou = sum(item.get("status") == "FALTOU" for item in resultado)
+    itens_excesso = sum(item.get("status") == "EXCESSO" for item in resultado)
+    tem_divergencia = itens_faltou > 0 or itens_excesso > 0
     status = "DIVERGENTE" if tem_divergencia else "CONFERIDA"
     agora = datetime.now().astimezone()
 
@@ -136,7 +136,7 @@ def registrar_conferencia(
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (numero_documento, arquivo_loja, arquivo_entrada),
+                (numero_documento, arquivo_loja or "", arquivo_entrada or ""),
             )
             existente = cur.fetchone()
             if existente:
@@ -154,7 +154,7 @@ def registrar_conferencia(
                 """,
                 (
                     numero_documento,
-                    data_documento or None,
+                    _normalizar_data(data_documento),
                     cliente,
                     "DEVOLUÇÃO",
                     status,
@@ -197,10 +197,6 @@ def registrar_conferencia(
                     ],
                 )
 
-            itens_ok = sum(item.get("status") == "OK" for item in resultado)
-            itens_faltou = sum(item.get("status") == "FALTOU" for item in resultado)
-            itens_excesso = sum(item.get("status") == "EXCESSO" for item in resultado)
-
             cur.execute(
                 """
                 INSERT INTO devolucao_conferencias (
@@ -225,11 +221,8 @@ def registrar_conferencia(
                     agora,
                 ),
             )
-
         conn.commit()
-
     return devolucao_id
-
 
 
 def listar_devolucoes():
@@ -237,7 +230,6 @@ def listar_devolucoes():
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM devolucoes ORDER BY id DESC")
             return cur.fetchall()
-
 
 
 def buscar_itens_devolucao(devolucao_id: int):
