@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from .database import init_db, listar_devolucoes
+from .database import init_db, listar_devolucoes, listar_defeitos_anapolis
 
 
 def preparar_banco() -> None:
@@ -18,19 +18,33 @@ def resumo_dashboard() -> dict:
             resumo["conferencia"] += 1
         elif status in {"PENDENTE", "DIVERGENTE"}:
             resumo["pendentes"] += 1
+        elif status in {"AGUARDANDO TRATAMENTO"}:
+            resumo["pendentes"] += 1
         elif status in {"CONCLUÍDA", "CONCLUIDA"}:
             resumo["concluidas"] += 1
     return resumo
 
 
-def comparar_documentos(romaneio_loja: dict, romaneio_entrada: dict) -> list[dict]:
-    """Compara as quantidades por código de barras.
+def obter_defeitos_documento(numero_documento: str) -> dict[str, int]:
+    return {
+        str(row["codigo_barras"]): int(row["quantidade"])
+        for row in listar_defeitos_anapolis(numero_documento)
+    }
 
-    A chave do cruzamento é o código de barras. Um código ausente em um dos
-    documentos também aparece no resultado, permitindo identificar faltas e excessos.
+
+def comparar_documentos(romaneio_loja: dict, romaneio_entrada: dict, defeitos_anapolis: dict[str, int] | None = None) -> list[dict]:
+    """Compara loja x entrada CD + defeitos bipados em Anápolis.
+
+    Uma peça é considerada encontrada quando estiver na entrada do CD ou
+    registrada como defeito em Anápolis. Portanto:
+
+        encontrado = entrada_cd + anapolis
+
+    O código de barras continua sendo a chave do cruzamento.
     """
     loja = defaultdict(int)
     entrada = defaultdict(int)
+    anapolis = defaultdict(int, defeitos_anapolis or {})
     dados = {}
 
     for item in romaneio_loja.get("itens", []):
@@ -44,10 +58,13 @@ def comparar_documentos(romaneio_loja: dict, romaneio_entrada: dict) -> list[dic
         dados.setdefault(codigo, item)
 
     resultado = []
-    for codigo in sorted(set(loja) | set(entrada)):
+    for codigo in sorted(set(loja) | set(entrada) | set(anapolis)):
         qtd_loja = loja[codigo]
         qtd_entrada = entrada[codigo]
-        diferenca = qtd_entrada - qtd_loja
+        qtd_anapolis = anapolis[codigo]
+        qtd_encontrada = qtd_entrada + qtd_anapolis
+        diferenca = qtd_encontrada - qtd_loja
+
         if diferenca == 0:
             status = "OK"
         elif diferenca < 0:
@@ -55,7 +72,7 @@ def comparar_documentos(romaneio_loja: dict, romaneio_entrada: dict) -> list[dic
         else:
             status = "EXCESSO"
 
-        base = dados[codigo]
+        base = dados.get(codigo, {})
         resultado.append(
             {
                 "codigo_barras": codigo,
@@ -64,6 +81,8 @@ def comparar_documentos(romaneio_loja: dict, romaneio_entrada: dict) -> list[dic
                 "grade": base.get("grade", ""),
                 "qtd_loja": qtd_loja,
                 "qtd_entrada": qtd_entrada,
+                "qtd_anapolis": qtd_anapolis,
+                "qtd_encontrada": qtd_encontrada,
                 "diferenca": diferenca,
                 "status": status,
             }
