@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+from modules.devolucoes.database import buscar_itens_devolucao, listar_devolucoes, registrar_conferencia
 from modules.devolucoes.parser import ParserRomaneio
 from modules.devolucoes.services import comparar_documentos, preparar_banco
 
@@ -10,12 +11,14 @@ preparar_banco()
 st.title("📦 Centro de Tratamento de Devoluções")
 st.caption("Ambiente isolado de testes — nenhuma lógica do aplicativo oficial é alterada aqui.")
 
-if "comparacao" not in st.session_state:
-    st.session_state.comparacao = None
-if "loja" not in st.session_state:
-    st.session_state.loja = None
-if "entrada" not in st.session_state:
-    st.session_state.entrada = None
+for key, value in {
+    "comparacao": None,
+    "loja": None,
+    "entrada": None,
+    "registrado_id": None,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 pages = {
     "🏠 Dashboard": "dashboard",
@@ -32,8 +35,12 @@ parser = ParserRomaneio()
 
 if pages[selecao] == "dashboard":
     st.header("Dashboard")
-    st.info("Fluxo de teste: romaneio da loja + romaneio da entrada → conferência por código de barras.")
-    st.metric("Comparações realizadas nesta sessão", 1 if st.session_state.comparacao else 0)
+    registros = listar_devolucoes()
+    st.info("Fluxo: romaneio da loja + romaneio da entrada → conferência → registro histórico.")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Devoluções registradas", len(registros))
+    c2.metric("Conferidas", sum(1 for r in registros if r["status"] == "CONFERIDA"))
+    c3.metric("Divergentes", sum(1 for r in registros if r["status"] == "DIVERGENTE"))
 
 elif pages[selecao] == "recebimento":
     st.header("📥 Recebimento da devolução")
@@ -52,6 +59,7 @@ elif pages[selecao] == "recebimento":
                 st.session_state.loja = resultado_loja
                 st.session_state.entrada = resultado_entrada
                 st.session_state.comparacao = comparar_documentos(resultado_loja, resultado_entrada)
+                st.session_state.registrado_id = None
                 st.success("Documentos lidos e comparação criada.")
             except Exception as exc:
                 st.error(f"Não foi possível processar os PDFs: {exc}")
@@ -63,6 +71,32 @@ elif pages[selecao] == "recebimento":
         c2.metric("Peças loja", st.session_state.loja["total_pecas"])
         c3.metric("Peças entrada", st.session_state.entrada["total_pecas"])
         c4.metric("Itens distintos", len(st.session_state.comparacao or []))
+
+        if st.session_state.registrado_id:
+            st.success(f"Devolução registrada no histórico. ID interno: {st.session_state.registrado_id}")
+        else:
+            st.divider()
+            st.subheader("Registrar resultado")
+            divergente = any(item.get("status") != "OK" for item in st.session_state.comparacao or [])
+            if divergente:
+                st.warning("Esta conferência possui divergências. O registro será salvo como DIVERGENTE, sem alterar o estoque.")
+            else:
+                st.success("Esta conferência está 100% OK. O registro será salvo como CONFERIDA.")
+
+            if st.button("✅ Registrar devolução no histórico", type="primary"):
+                try:
+                    st.session_state.registrado_id = registrar_conferencia(
+                        numero_documento=st.session_state.loja["cabecalho"].get("numero_documento", ""),
+                        data_documento=st.session_state.loja["cabecalho"].get("data_documento", ""),
+                        arquivo_loja=pdf_loja.name if pdf_loja else "",
+                        arquivo_entrada=pdf_entrada.name if pdf_entrada else "",
+                        resultado=st.session_state.comparacao or [],
+                        total_pecas_loja=st.session_state.loja["total_pecas"],
+                        total_pecas_entrada=st.session_state.entrada["total_pecas"],
+                    )
+                    st.success("Devolução registrada com sucesso. Nenhuma movimentação de estoque foi realizada.")
+                except Exception as exc:
+                    st.error(f"Não foi possível registrar a devolução: {exc}")
 
 elif pages[selecao] == "conferencia":
     st.header("🔎 Conferência")
@@ -90,22 +124,52 @@ elif pages[selecao] == "pendencias":
 
 elif pages[selecao] == "decisao":
     st.header("📋 Aguardando decisão")
-    st.info("Depois da conferência, esta área receberá as decisões sobre as mercadorias.")
+    st.info("Depois do registro, esta área será usada para decidir o destino das mercadorias. Ainda não há alteração de estoque.")
 
 elif pages[selecao] == "historico":
-    st.header("🕘 Histórico")
-    st.info("O histórico definitivo será conectado depois que o fluxo de conferência for validado.")
+    st.header("🕘 Histórico de devoluções")
+    registros = listar_devolucoes()
+    if not registros:
+        st.info("Nenhuma devolução foi registrada ainda.")
+    else:
+        dados = [
+            {
+                "ID": r["id"],
+                "Documento": r["numero_documento"],
+                "Data": r["data_documento"],
+                "Status": r["status"],
+                "Peças loja": r["total_pecas_loja"] or 0,
+                "Peças entrada": r["total_pecas_entrada"] or 0,
+                "Diferença": r["diferenca_total"] or 0,
+                "Itens distintos": r["itens_distintos"] or 0,
+                "Registrado em": r["registrado_em"] or r["criado_em"],
+            }
+            for r in registros
+        ]
+        df = pd.DataFrame(dados)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        opcoes = [f"#{r['id']} — documento {r['numero_documento']}" for r in registros]
+        escolha = st.selectbox("Ver itens de uma devolução", opcoes)
+        registro_id = registros[opcoes.index(escolha)]["id"]
+        itens = buscar_itens_devolucao(int(registro_id))
+        if itens:
+            st.subheader(f"Itens da devolução #{registro_id}")
+            itens_df = pd.DataFrame([dict(item) for item in itens])
+            st.dataframe(itens_df, use_container_width=True, hide_index=True)
 
 elif pages[selecao] == "indicadores":
     st.header("📊 Indicadores")
-    if st.session_state.comparacao:
-        df = pd.DataFrame(st.session_state.comparacao)
-        a, b, c = st.columns(3)
-        a.metric("Peças da loja", int(df["qtd_loja"].sum()))
-        b.metric("Peças da entrada", int(df["qtd_entrada"].sum()))
-        c.metric("Diferença total", int(df["diferenca"].sum()))
+    registros = listar_devolucoes()
+    if registros:
+        total_loja = sum(r["total_pecas_loja"] or 0 for r in registros)
+        total_entrada = sum(r["total_pecas_entrada"] or 0 for r in registros)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Peças da loja", total_loja)
+        c2.metric("Peças da entrada", total_entrada)
+        c3.metric("Diferença acumulada", total_entrada - total_loja)
     else:
-        st.info("Faça uma conferência para gerar os indicadores.")
+        st.info("Registre pelo menos uma devolução para gerar indicadores.")
 
 elif pages[selecao] == "configuracoes":
     st.header("⚙️ Configurações")
