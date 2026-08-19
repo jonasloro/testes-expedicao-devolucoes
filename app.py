@@ -1,10 +1,15 @@
 import streamlit as st
 
+from modules.devolucoes.interface import render_recebimento
+from modules.devolucoes.services import preparar_banco, resumo_dashboard
+
 st.set_page_config(
     page_title="Centro de Tratamento de Devoluções",
     page_icon="📦",
     layout="wide",
 )
+
+preparar_banco()
 
 st.title("📦 Centro de Tratamento de Devoluções")
 st.caption("Ambiente isolado de testes — nenhuma lógica do aplicativo oficial é alterada aqui.")
@@ -24,22 +29,21 @@ selecao = st.sidebar.radio("Centro de Devoluções", list(pages.keys()))
 
 if pages[selecao] == "dashboard":
     st.header("Dashboard")
-    st.info("Painel inicial do laboratório. Os indicadores serão alimentados pelo módulo de devoluções.")
+    resumo = resumo_dashboard()
+    st.info("Visão geral do fluxo de devoluções em teste.")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Recebidas", 0)
-    c2.metric("Em conferência", 0)
-    c3.metric("Pendentes", 0)
-    c4.metric("Concluídas", 0)
+    c1.metric("Recebidas", resumo["recebidas"])
+    c2.metric("Em conferência", resumo["conferencia"])
+    c3.metric("Pendentes", resumo["pendentes"])
+    c4.metric("Concluídas", resumo["concluidas"])
 
 elif pages[selecao] == "recebimento":
-    st.header("📥 Recebimento de devolução")
-    st.write("Importe um romaneio para criar um processo de devolução.")
-    st.file_uploader("Romaneio da devolução", type=["pdf"], key="romaneio_pdf")
-    st.caption("Nesta primeira versão, a leitura do PDF ainda será validada antes de gravar qualquer dado.")
+    render_recebimento()
 
 elif pages[selecao] == "conferencia":
     st.header("🔎 Conferência")
     st.info("Aqui vamos comparar o que consta no romaneio com o que efetivamente foi recebido.")
+    st.caption("Próxima etapa do laboratório: conferência item a item.")
 
 elif pages[selecao] == "pendencias":
     st.header("⚠️ Pendências")
