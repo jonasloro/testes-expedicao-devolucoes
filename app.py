@@ -50,6 +50,7 @@ for key, value in {
     "comparacao": None,
     "loja": None,
     "entrada": None,
+    "anapolis_romaneio": None,
     "loja_selecionada": None,
     "registrado_id": None,
 }.items():
@@ -79,11 +80,11 @@ if pages[selecao] == "dashboard":
     c2.metric("Aguardando tratamento", sum(1 for r in registros if r["status"] in {"AGUARDANDO TRATAMENTO", "DIVERGENTE", "CONFERIDA"}))
     c3.metric("Concluídas", sum(1 for r in registros if r["status"] == "CONCLUÍDA"))
     c4.metric("Lojas com registros", len({r["loja"] for r in registros if r.get("loja")}))
-    st.info("Fluxo: loja + entrada → conferência (+ Anápolis) → registro → tratamento. Nenhum tratamento altera o estoque.")
+    st.info("Fluxo: romaneio da loja + romaneio CD + romaneio Anápolis → conferência → registro → tratamento. Bipagem de defeitos permanece como recurso auxiliar.")
 
 elif pages[selecao] == "recebimento":
     st.header("📥 Recebimento da devolução")
-    st.write("Selecione a loja e envie os dois documentos. A conferência considera Entrada no CD + Defeitos bipados em Anápolis.")
+    st.write("Selecione a loja e envie os três documentos. A conferência oficial considera Entrada CD + Entrada Anápolis.")
 
     loja_selecionada = st.selectbox(
         "Loja da devolução",
@@ -94,38 +95,55 @@ elif pages[selecao] == "recebimento":
     if loja_selecionada != "Selecione uma loja":
         st.session_state.loja_selecionada = loja_selecionada
 
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         pdf_loja = st.file_uploader("1. Romaneio enviado pela loja", type=["pdf"], key="pdf_loja")
-    with col2:
+    with c2:
         pdf_entrada = st.file_uploader("2. Romaneio da entrada no CD", type=["pdf"], key="pdf_entrada")
+    with c3:
+        pdf_anapolis = st.file_uploader("3. Romaneio da entrada em Anápolis", type=["pdf"], key="pdf_anapolis")
 
-    pode_comparar = loja_selecionada != "Selecione uma loja" and pdf_loja is not None and pdf_entrada is not None
+    pode_comparar = (
+        loja_selecionada != "Selecione uma loja"
+        and pdf_loja is not None
+        and pdf_entrada is not None
+        and pdf_anapolis is not None
+    )
 
-    if pode_comparar and st.button("🔎 Ler e comparar os dois romaneios", type="primary"):
+    if pode_comparar and st.button("🔎 Ler e comparar os três romaneios", type="primary"):
         try:
-            with st.spinner("Lendo os documentos e consultando defeitos de Anápolis..."):
+            with st.spinner("Lendo os três documentos e montando a conferência..."):
                 resultado_loja = parser.analisar(pdf_loja.getvalue())
                 resultado_entrada = parser.analisar(pdf_entrada.getvalue())
-                numero_documento = resultado_loja["cabecalho"].get("numero_documento", "")
-                defeitos = obter_defeitos_documento(numero_documento)
+                resultado_anapolis = parser.analisar(pdf_anapolis.getvalue())
+
+                defeitos_anapolis = {}
+                for item in resultado_anapolis.get("itens", []):
+                    codigo = str(item["codigo_barras"]).strip()
+                    defeitos_anapolis[codigo] = defeitos_anapolis.get(codigo, 0) + int(item["quantidade"])
+
                 st.session_state.loja = resultado_loja
                 st.session_state.entrada = resultado_entrada
-                st.session_state.comparacao = comparar_documentos(resultado_loja, resultado_entrada, defeitos)
+                st.session_state.anapolis_romaneio = resultado_anapolis
+                st.session_state.comparacao = comparar_documentos(
+                    resultado_loja,
+                    resultado_entrada,
+                    defeitos_anapolis,
+                )
                 st.session_state.registrado_id = None
-            st.success("Documentos lidos e comparação criada.")
+
+            st.success("Os três romaneios foram lidos e a conferência foi criada.")
         except Exception as exc:
             st.error(f"Não foi possível processar os PDFs: {exc}")
 
-    if st.session_state.loja and st.session_state.entrada:
-        defeitos = obter_defeitos_documento(st.session_state.loja["cabecalho"].get("numero_documento", ""))
-        total_anapolis = sum(defeitos.values())
+    if st.session_state.loja and st.session_state.entrada and st.session_state.anapolis_romaneio:
+        total_anapolis = int(st.session_state.anapolis_romaneio["total_pecas"] or 0)
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Documento", st.session_state.loja["cabecalho"].get("numero_documento") or "—")
         c2.metric("Loja", st.session_state.loja_selecionada or "—")
         c3.metric("Peças loja", st.session_state.loja["total_pecas"])
-        c4.metric("Peças entrada CD", st.session_state.entrada["total_pecas"])
-        c5.metric("Defeitos Anápolis", total_anapolis)
+        c4.metric("Entrada CD", st.session_state.entrada["total_pecas"])
+        c5.metric("Entrada Anápolis", total_anapolis)
 
         df = pd.DataFrame(st.session_state.comparacao or [])
         st.metric("Itens distintos", len(df))
@@ -133,9 +151,9 @@ elif pages[selecao] == "recebimento":
         if not st.session_state.registrado_id:
             divergente = not df.empty and (df["status"] != "OK").any()
             if divergente:
-                st.warning("A conferência possui diferenças depois de considerar a entrada do CD + Anápolis.")
+                st.warning("A conferência possui diferenças: Loja ≠ Entrada CD + Entrada Anápolis.")
             else:
-                st.success("A conferência está 100% OK considerando CD + Anápolis.")
+                st.success("A conferência está 100% OK: Loja = Entrada CD + Entrada Anápolis.")
 
             if st.button("✅ Registrar devolução no histórico", type="primary"):
                 try:
@@ -144,9 +162,11 @@ elif pages[selecao] == "recebimento":
                         data_documento=st.session_state.loja["cabecalho"].get("data_documento", ""),
                         arquivo_loja=pdf_loja.name,
                         arquivo_entrada=pdf_entrada.name,
+                        arquivo_anapolis=pdf_anapolis.name,
                         resultado=st.session_state.comparacao or [],
                         total_pecas_loja=st.session_state.loja["total_pecas"],
                         total_pecas_entrada=st.session_state.entrada["total_pecas"],
+                        total_pecas_anapolis=st.session_state.anapolis_romaneio["total_pecas"],
                         loja=st.session_state.loja_selecionada or "",
                     )
                     st.success(f"Devolução registrada no Neon. ID interno: {st.session_state.registrado_id}")
@@ -158,7 +178,7 @@ elif pages[selecao] == "recebimento":
 elif pages[selecao] == "conferencia":
     st.header("🔎 Conferência")
     if not st.session_state.comparacao:
-        st.info("Envie os dois romaneios na tela Recebimento para iniciar a conferência.")
+        st.info("Envie os três romaneios na tela Recebimento para iniciar a conferência.")
     else:
         df = pd.DataFrame(st.session_state.comparacao)
         c1, c2, c3 = st.columns(3)
@@ -273,7 +293,7 @@ elif pages[selecao] == "decisao":
 
 elif pages[selecao] == "anapolis":
     st.header("🩹 Defeitos Anápolis")
-    st.write("Bipe cada peça com defeito que foi encaminhada para Anápolis. Cada bip representa 1 peça.")
+    st.write("Recurso auxiliar para situações em que o romaneio de Anápolis ainda não estiver disponível. O fluxo oficial usa o terceiro romaneio.")
 
     documento = st.text_input("Documento da devolução", placeholder="Ex.: 84630", key="anapolis_documento").strip()
     codigo = st.text_input("Código de barras", placeholder="Bipe ou digite o código", key="anapolis_codigo").strip()
@@ -283,23 +303,22 @@ elif pages[selecao] == "anapolis":
         if st.button("📦 Registrar bip", type="primary", disabled=not documento or not codigo):
             try:
                 bipar(documento, codigo)
-                st.success("Bip registrado em Anápolis.")
+                st.success("Bip auxiliar registrado em Anápolis.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Não foi possível registrar o bip: {exc}")
     with c2:
-        st.info("Dica: leitores de código de barras normalmente funcionam como teclado; deixe o cursor no campo de código e bip o produto.")
+        st.info("O bip é apenas um recurso auxiliar. A conferência oficial passa a usar o romaneio de Anápolis.")
 
     if documento:
         registros_anapolis = resumo_anapolis(documento)
         if registros_anapolis:
             df_a = pd.DataFrame([dict(r) for r in registros_anapolis])
-            st.subheader("Defeitos registrados")
+            st.subheader("Bips auxiliares registrados")
             st.dataframe(df_a, use_container_width=True, hide_index=True)
-            st.metric("Total de peças em Anápolis", int(df_a["quantidade"].sum()))
-            st.caption("Esses registros entram automaticamente na conferência do mesmo documento.")
+            st.metric("Total de peças bipadas", int(df_a["quantidade"].sum()))
         else:
-            st.info("Nenhum defeito bipado para este documento.")
+            st.info("Nenhum bip auxiliar para este documento.")
 
 elif pages[selecao] == "historico":
     st.header("🕘 Histórico de devoluções")
@@ -348,8 +367,8 @@ elif pages[selecao] == "historico":
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Devoluções", len(filtrados))
         c2.metric("Peças loja", sum(r["total_pecas_loja"] or 0 for r in filtrados))
-        c3.metric("Peças entrada", sum(r["total_pecas_entrada"] or 0 for r in filtrados))
-        c4.metric("Concluídas", sum(r["status"] == "CONCLUÍDA" for r in filtrados))
+        c3.metric("Peças CD", sum(r["total_pecas_entrada"] or 0 for r in filtrados))
+        c4.metric("Peças Anápolis", sum(r.get("total_pecas_anapolis") or 0 for r in filtrados))
 
         if filtrados:
             dados = []
@@ -362,7 +381,8 @@ elif pages[selecao] == "historico":
                     "Data": data_texto,
                     "Status": r["status"],
                     "Peças loja": r["total_pecas_loja"] or 0,
-                    "Peças entrada": r["total_pecas_entrada"] or 0,
+                    "Peças CD": r["total_pecas_entrada"] or 0,
+                    "Peças Anápolis": r.get("total_pecas_anapolis") or 0,
                     "Diferença": r["diferenca_total"] or 0,
                     "Itens": r["itens_distintos"] or 0,
                 })
@@ -379,7 +399,8 @@ elif pages[selecao] == "historico":
             c3.metric("Status", registro["status"])
             c4.metric("Diferença", registro["diferenca_total"] or 0)
             st.write(f"**Romaneio da loja:** {registro['arquivo_loja'] or '—'}")
-            st.write(f"**Romaneio da entrada:** {registro['arquivo_entrada'] or '—'}")
+            st.write(f"**Romaneio da entrada CD:** {registro['arquivo_entrada'] or '—'}")
+            st.write(f"**Romaneio da entrada Anápolis:** {registro.get('arquivo_anapolis') or '—'}")
 
             itens = buscar_itens_devolucao(registro_id)
             if itens:
@@ -397,11 +418,13 @@ elif pages[selecao] == "indicadores":
     registros = listar_devolucoes()
     if registros:
         total_loja = sum(r["total_pecas_loja"] or 0 for r in registros)
-        total_entrada = sum(r["total_pecas_entrada"] or 0 for r in registros)
+        total_cd = sum(r["total_pecas_entrada"] or 0 for r in registros)
+        total_anapolis = sum(r.get("total_pecas_anapolis") or 0 for r in registros)
         c1, c2, c3 = st.columns(3)
         c1.metric("Peças da loja", total_loja)
-        c2.metric("Peças da entrada", total_entrada)
-        c3.metric("Diferença acumulada", total_entrada - total_loja)
+        c2.metric("Peças da entrada CD", total_cd)
+        c3.metric("Peças da entrada Anápolis", total_anapolis)
+        st.metric("Diferença acumulada", total_cd + total_anapolis - total_loja)
     else:
         st.info("Registre pelo menos uma devolução para gerar indicadores.")
 
