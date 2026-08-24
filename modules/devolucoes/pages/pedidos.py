@@ -21,6 +21,7 @@ def _formatar_status(status: str) -> str:
 
 
 def _mostrar_pedido(pedido: dict) -> None:
+    st.divider()
     st.subheader(f"🔎 Inspeção da devolução #{pedido['id']}")
 
     c1, c2, c3, c4 = st.columns(4)
@@ -39,7 +40,7 @@ def _mostrar_pedido(pedido: dict) -> None:
 
     lacres = pedido.get("lacres", [])
     if lacres:
-        with st.expander(f"🔒 Lacres ({len(lacres)})", expanded=True):
+        with st.expander(f"🔒 Lacres ({len(lacres)})", expanded=False):
             st.dataframe(
                 pd.DataFrame(
                     [{"Lacre": x["lacre"], "Conteúdo": x["descricao"] or "—"} for x in lacres]
@@ -65,6 +66,10 @@ def _mostrar_pedido(pedido: dict) -> None:
             atualizar_status(int(pedido["id"]), novo_status)
             st.success("Status atualizado.")
             st.rerun()
+
+    if st.button("✖ Fechar inspeção", key=f"pedido_fechar_{pedido['id']}"):
+        st.session_state["pedido_inspecionado_id"] = None
+        st.rerun()
 
 
 def _mostrar_previa(dados: dict) -> None:
@@ -97,6 +102,8 @@ def render(lojas: list[str]) -> None:
         st.session_state["pedido_email_preview"] = None
     if "pedido_criado_id" not in st.session_state:
         st.session_state["pedido_criado_id"] = None
+    if "pedido_inspecionado_id" not in st.session_state:
+        st.session_state["pedido_inspecionado_id"] = None
 
     tab_lista, tab_email = st.tabs(["📋 Pedidos", "📨 Importar e-mail"])
 
@@ -177,32 +184,29 @@ def render(lojas: list[str]) -> None:
             st.info("Nenhum pedido encontrado.")
             return
 
-        dados_lista = []
+        # Lista operacional enxuta: os detalhes aparecem somente ao clicar na lupa.
+        h1, h2, h3, h4, h5, h6 = st.columns([1.1, 1.0, 2.8, 0.9, 1.4, 0.45])
+        h1.caption("Emissão")
+        h2.caption("Documento")
+        h3.caption("Loja")
+        h4.caption("Volumes")
+        h5.caption("Status")
+        h6.caption(" ")
+
         for r in registros:
             criado_em = r.get("criado_em")
-            dados_lista.append(
-                {
-                    "Emissão": criado_em.strftime("%d/%m/%Y") if criado_em else "—",
-                    "Documento": r["numero_nota"],
-                    "Loja": r["loja"],
-                    "Volumes": int(r["volumes"] or 0),
-                    "Status": _formatar_status(r["status"]),
-                }
-            )
+            c1, c2, c3, c4, c5, c6 = st.columns([1.1, 1.0, 2.8, 0.9, 1.4, 0.45])
+            c1.write(criado_em.strftime("%d/%m/%Y") if criado_em else "—")
+            c2.write(f"**{r['numero_nota']}**")
+            c3.write(r["loja"] or "—")
+            c4.write(str(int(r["volumes"] or 0)))
+            c5.write(_formatar_status(r["status"]))
+            if c6.button("🔎", key=f"pedido_inspecionar_{r['id']}", help="Inspecionar devolução"):
+                st.session_state["pedido_inspecionado_id"] = int(r["id"])
+                st.rerun()
 
-        st.dataframe(
-            pd.DataFrame(dados_lista),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        opcoes = [f"#{r['id']} — NF {r['numero_nota']} — {r['loja']}" for r in registros]
-        escolha = st.selectbox(
-            "🔎 Inspecionar devolução",
-            opcoes,
-            key="pedido_detalhe",
-        )
-        pedido_id = int(registros[opcoes.index(escolha)]["id"])
-        pedido = buscar_pedido(pedido_id)
-        if pedido:
-            _mostrar_pedido(pedido)
+        inspecionado_id = st.session_state.get("pedido_inspecionado_id")
+        if inspecionado_id:
+            pedido = buscar_pedido(int(inspecionado_id))
+            if pedido:
+                _mostrar_pedido(pedido)
