@@ -8,6 +8,12 @@ from ..pedidos_database import atualizar_status, buscar_pedido, criar_pedido, li
 STATUS = ["Todos", "PENDENTE", "EM RECEBIMENTO", "RECEBIDO", "CONFERIDO", "CONCLUIDO", "CANCELADO"]
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def _listar_pedidos_cache(status: str):
+    """Mantém a lista resumida em cache para evitar consultas repetidas a cada rerun."""
+    return listar_pedidos(status)
+
+
 def _formatar_status(status: str) -> str:
     mapa = {
         "PENDENTE": "🔵 Pendente",
@@ -20,9 +26,15 @@ def _formatar_status(status: str) -> str:
     return mapa.get(str(status).upper(), str(status))
 
 
-def _mostrar_pedido(pedido: dict) -> None:
-    st.divider()
-    st.subheader(f"🔎 Inspeção da devolução #{pedido['id']}")
+@st.dialog("🔎 Inspeção da devolução", width="large")
+def _abrir_inspecao(pedido_id: int) -> None:
+    """Busca os detalhes somente quando o usuário abre a lupa."""
+    pedido = buscar_pedido(int(pedido_id))
+    if not pedido:
+        st.error("Não foi possível localizar esta devolução.")
+        return
+
+    st.markdown(f"### Pedido #{pedido['id']} — NF {pedido['numero_nota']}")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Documento", pedido["numero_nota"])
@@ -40,7 +52,7 @@ def _mostrar_pedido(pedido: dict) -> None:
 
     lacres = pedido.get("lacres", [])
     if lacres:
-        with st.expander(f"🔒 Lacres ({len(lacres)})", expanded=False):
+        with st.expander(f"🔒 Lacres ({len(lacres)})", expanded=True):
             st.dataframe(
                 pd.DataFrame(
                     [{"Lacre": x["lacre"], "Conteúdo": x["descricao"] or "—"} for x in lacres]
@@ -53,7 +65,7 @@ def _mostrar_pedido(pedido: dict) -> None:
 
     if pedido.get("observacao"):
         with st.expander("📨 Conteúdo original da solicitação", expanded=False):
-            st.write(pedido["observacao"])
+            st.text(pedido["observacao"])
 
     with st.expander("⚙️ Alterar status", expanded=False):
         novo_status = st.selectbox(
@@ -62,14 +74,14 @@ def _mostrar_pedido(pedido: dict) -> None:
             index=STATUS[1:].index(pedido["status"]) if pedido["status"] in STATUS[1:] else 0,
             key=f"pedido_status_{pedido['id']}",
         )
-        if st.button("Salvar status", key=f"pedido_salvar_{pedido['id']}"):
-            atualizar_status(int(pedido["id"]), novo_status)
-            st.success("Status atualizado.")
-            st.rerun()
-
-    if st.button("✖ Fechar inspeção", key=f"pedido_fechar_{pedido['id']}"):
-        st.session_state["pedido_inspecionado_id"] = None
-        st.rerun()
+        if st.button("Salvar status", key=f"pedido_salvar_{pedido['id']}", type="primary"):
+            try:
+                atualizar_status(int(pedido["id"]), novo_status)
+                _listar_pedidos_cache.clear()
+                st.success("Status atualizado.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Não foi possível atualizar o status: {exc}")
 
 
 def _mostrar_previa(dados: dict) -> None:
@@ -102,8 +114,6 @@ def render(lojas: list[str]) -> None:
         st.session_state["pedido_email_preview"] = None
     if "pedido_criado_id" not in st.session_state:
         st.session_state["pedido_criado_id"] = None
-    if "pedido_inspecionado_id" not in st.session_state:
-        st.session_state["pedido_inspecionado_id"] = None
 
     tab_lista, tab_email = st.tabs(["📋 Pedidos", "📨 Importar e-mail"])
 
@@ -159,6 +169,7 @@ def render(lojas: list[str]) -> None:
                                     observacao=dados["corpo"],
                                     assunto_email=dados["assunto"],
                                 )
+                                _listar_pedidos_cache.clear()
                                 st.session_state["pedido_criado_id"] = pedido_id
                                 st.session_state["pedido_email_preview"] = None
                                 st.session_state["pedido_email_raw"] = ""
@@ -173,7 +184,7 @@ def render(lojas: list[str]) -> None:
 
     with tab_lista:
         filtro_status = st.selectbox("Status", STATUS, key="pedido_filtro_status")
-        registros = listar_pedidos(filtro_status)
+        registros = _listar_pedidos_cache(filtro_status)
 
         pedido_criado_id = st.session_state.get("pedido_criado_id")
         if pedido_criado_id:
@@ -184,7 +195,7 @@ def render(lojas: list[str]) -> None:
             st.info("Nenhum pedido encontrado.")
             return
 
-        # Lista operacional enxuta: os detalhes aparecem somente ao clicar na lupa.
+        # Lista operacional compacta: os detalhes são carregados apenas pela lupa.
         h1, h2, h3, h4, h5, h6 = st.columns([1.1, 1.0, 2.8, 0.9, 1.4, 0.45])
         h1.caption("Emissão")
         h2.caption("Documento")
@@ -202,11 +213,4 @@ def render(lojas: list[str]) -> None:
             c4.write(str(int(r["volumes"] or 0)))
             c5.write(_formatar_status(r["status"]))
             if c6.button("🔎", key=f"pedido_inspecionar_{r['id']}", help="Inspecionar devolução"):
-                st.session_state["pedido_inspecionado_id"] = int(r["id"])
-                st.rerun()
-
-        inspecionado_id = st.session_state.get("pedido_inspecionado_id")
-        if inspecionado_id:
-            pedido = buscar_pedido(int(inspecionado_id))
-            if pedido:
-                _mostrar_pedido(pedido)
+                _abrir_inspecao(int(r["id"]))
