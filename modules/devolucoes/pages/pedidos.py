@@ -17,8 +17,8 @@ def _mostrar_pedido(pedido: dict) -> None:
     c4.metric("Lacres", len(pedido.get("lacres", [])))
 
     c1, c2 = st.columns(2)
-    c1.write(f"**Data da coleta:** {pedido['data_coleta'].strftime('%d/%m/%Y') if pedido.get('data_coleta') else '—'}")
-    c2.write(f"**Transportadora:** {pedido.get('transportadora') or '—'}")
+    c1.write(f"**Data da coleta:** {pedido['data_coleta'].strftime('%d/%m/%Y') if pedido.get('data_coleta') else 'Não informada'}")
+    c2.write(f"**Transportadora:** {pedido.get('transportadora') or 'Não informada'}")
     st.write(f"**Status:** `{pedido['status']}`")
 
     lacres = pedido.get("lacres", [])
@@ -75,11 +75,13 @@ def render(lojas: list[str]) -> None:
                         c1, c2, c3, c4 = st.columns(4)
                         c1.metric("Nota", dados["numero_nota"])
                         c2.metric("Loja", dados["loja"])
-                        c3.metric("Volumes", dados["volumes"])
+                        c3.metric("Volumes", len(dados["lacres"]))
                         c4.metric("Lacres", len(dados["lacres"]))
-                        st.write(f"**Data da coleta:** {dados['data_coleta'].strftime('%d/%m/%Y') if dados['data_coleta'] else '—'}")
-                        st.write(f"**Transportadora:** {dados['transportadora'] or '—'}")
-                        if dados["lacres"]:
+                        st.write(f"**Data da coleta:** {dados['data_coleta'].strftime('%d/%m/%Y') if dados['data_coleta'] else 'Não informada'}")
+                        st.write(f"**Transportadora:** {dados['transportadora'] or 'Não informada'}")
+                        if not dados["lacres"]:
+                            st.warning("Nenhum lacre foi identificado. Verifique o formato do e-mail antes de criar o pedido.")
+                        else:
                             st.dataframe(pd.DataFrame(dados["lacres"]), use_container_width=True, hide_index=True)
 
                         if st.button("✅ Confirmar criação do pedido", key="pedido_confirmar"):
@@ -88,12 +90,14 @@ def render(lojas: list[str]) -> None:
                                 loja=dados["loja"],
                                 data_coleta=dados["data_coleta"],
                                 transportadora=dados["transportadora"],
-                                volumes=dados["volumes"],
+                                volumes=len(dados["lacres"]),
                                 lacres=dados["lacres"],
                                 observacao=dados["corpo"],
                                 assunto_email=dados["assunto"],
                             )
                             st.success(f"Pedido de devolução #{pedido_id} criado.")
+                            st.session_state["pedido_criado_id"] = pedido_id
+                            st.rerun()
                 except Exception as exc:
                     st.error(f"Não foi possível interpretar o e-mail: {exc}")
 
@@ -103,6 +107,10 @@ def render(lojas: list[str]) -> None:
         if not registros:
             st.info("Nenhum pedido encontrado.")
             return
+
+        pedido_criado_id = st.session_state.pop("pedido_criado_id", None)
+        if pedido_criado_id:
+            st.success(f"Pedido de devolução #{pedido_criado_id} criado e já disponível na lista abaixo.")
 
         dados = [
             {
