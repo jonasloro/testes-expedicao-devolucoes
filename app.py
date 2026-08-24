@@ -2,6 +2,7 @@ import streamlit as st
 
 from modules.devolucoes.parser import ParserRomaneio
 from modules.devolucoes.services import preparar_banco
+from modules.devolucoes.pedidos_database import init_pedidos_db
 from modules.devolucoes.tratamento import init_tratamento_db
 from modules.devolucoes.pages import (
     anapolis as page_anapolis,
@@ -10,6 +11,7 @@ from modules.devolucoes.pages import (
     dashboard as page_dashboard,
     historico as page_historico,
     indicadores as page_indicadores,
+    pedidos as page_pedidos,
     pendencias as page_pendencias,
     recebimento as page_recebimento,
     tratamento as page_tratamento,
@@ -23,9 +25,10 @@ st.set_page_config(
 
 preparar_banco()
 init_tratamento_db()
+init_pedidos_db()
 
 st.title("📦 Centro de Tratamento de Devoluções")
-st.caption("Ambiente isolado de testes — nenhuma lógica do aplicativo oficial é alterada aqui.")
+st.caption("Ambiente isolado de testes — novas alterações são desenvolvidas aqui antes de irem para o aplicativo oficial.")
 
 LOJAS = [
     "01 - Curitiba Prime",
@@ -58,6 +61,7 @@ for key, value in {
 
 PAGINAS = {
     "🏠 Dashboard": page_dashboard,
+    "📦 Pedidos de Devolução": page_pedidos,
     "📥 Recebimento": page_recebimento,
     "🔎 Conferência": page_conferencia,
     "⚠️ Pendências": page_pendencias,
@@ -74,6 +78,8 @@ pagina = PAGINAS[selecao]
 
 if pagina is page_recebimento:
     pagina.render(LOJAS, parser)
+elif pagina is page_pedidos:
+    pagina.render(LOJAS)
 else:
     pagina.render()
 
