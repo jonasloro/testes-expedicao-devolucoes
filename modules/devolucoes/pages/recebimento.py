@@ -4,21 +4,44 @@ import streamlit as st
 from ..database import registrar_conferencia
 from ..parser import ParserRomaneio
 from ..services import comparar_documentos
+from ..pedidos_database import listar_pedidos, vincular_devolucao
 from .conferencia import formatar_tabela
 from .tratamento import render as _render_tratamento
 
 
 def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
-    st.write("Selecione a loja e envie os três documentos. A conferência oficial considera Entrada CD + Entrada Anápolis.")
+    st.write("Selecione um pedido de devolução quando existir. A conferência oficial considera Entrada CD + Entrada Anápolis.")
 
-    loja_selecionada = st.selectbox(
-        "Loja da devolução",
-        ["Selecione uma loja"] + lojas,
-        index=(lojas.index(st.session_state.loja_selecionada) + 1) if st.session_state.loja_selecionada in lojas else 0,
-        key="recebimento_loja",
-    )
-    if loja_selecionada != "Selecione uma loja":
-        st.session_state.loja_selecionada = loja_selecionada
+    pedidos = [p for p in listar_pedidos() if p["status"] in {"PENDENTE", "EM RECEBIMENTO"}]
+    opcoes_pedido = ["Nenhum pedido selecionado"] + [
+        f"#{p['id']} — Nota {p['numero_nota']} — {p['loja']} — {p['volumes']} vol."
+        for p in pedidos
+    ]
+    pedido_escolha = st.selectbox("Pedido de devolução", opcoes_pedido, key="recebimento_pedido")
+    pedido_selecionado = None
+    if pedido_escolha != "Nenhum pedido selecionado":
+        pedido_selecionado = pedidos[opcoes_pedido.index(pedido_escolha) - 1]
+        st.session_state.pedido_recebimento_id = int(pedido_selecionado["id"])
+        st.session_state.loja_selecionada = str(pedido_selecionado["loja"])
+        st.info(
+            f"**Pedido #{pedido_selecionado['id']}** · Nota **{pedido_selecionado['numero_nota']}** · "
+            f"{pedido_selecionado['volumes']} volumes · {pedido_selecionado['total_lacres']} lacres. "
+            "A carga será conferida dentro desta demanda."
+        )
+        st.caption(f"Transportadora: {pedido_selecionado['transportadora'] or '—'}")
+
+    if pedido_selecionado:
+        loja_selecionada = str(pedido_selecionado["loja"])
+        st.text_input("Loja da devolução", value=loja_selecionada, disabled=True)
+    else:
+        loja_selecionada = st.selectbox(
+            "Loja da devolução",
+            ["Selecione uma loja"] + lojas,
+            index=(lojas.index(st.session_state.loja_selecionada) + 1) if st.session_state.loja_selecionada in lojas else 0,
+            key="recebimento_loja",
+        )
+        if loja_selecionada != "Selecione uma loja":
+            st.session_state.loja_selecionada = loja_selecionada
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -57,6 +80,9 @@ def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
                 )
                 st.session_state.registrado_id = None
 
+                if pedido_selecionado:
+                    st.session_state.pedido_recebimento_id = int(pedido_selecionado["id"])
+
             st.success("Os três romaneios foram lidos e a conferência foi criada — veja o resultado na aba 🔎 Conferência.")
         except Exception as exc:
             st.error(f"Não foi possível processar os PDFs: {exc}")
@@ -94,6 +120,9 @@ def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
                         total_pecas_anapolis=st.session_state.anapolis_romaneio["total_pecas"],
                         loja=st.session_state.loja_selecionada or "",
                     )
+                    pedido_id = st.session_state.get("pedido_recebimento_id")
+                    if pedido_id:
+                        vincular_devolucao(int(pedido_id), int(st.session_state.registrado_id))
                     st.success(f"Devolução registrada no Neon. ID interno: {st.session_state.registrado_id}")
                 except Exception as exc:
                     st.error(f"Não foi possível registrar a devolução: {exc}")
