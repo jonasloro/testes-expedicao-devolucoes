@@ -4,10 +4,11 @@ import streamlit as st
 from ..database import registrar_conferencia
 from ..parser import ParserRomaneio
 from ..services import comparar_documentos
+from .conferencia import formatar_tabela
+from .tratamento import render as _render_tratamento
 
 
-def render(lojas: list[str], parser: ParserRomaneio) -> None:
-    st.header("📥 Recebimento da devolução")
+def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
     st.write("Selecione a loja e envie os três documentos. A conferência oficial considera Entrada CD + Entrada Anápolis.")
 
     loja_selecionada = st.selectbox(
@@ -56,7 +57,7 @@ def render(lojas: list[str], parser: ParserRomaneio) -> None:
                 )
                 st.session_state.registrado_id = None
 
-            st.success("Os três romaneios foram lidos e a conferência foi criada.")
+            st.success("Os três romaneios foram lidos e a conferência foi criada — veja o resultado na aba 🔎 Conferência.")
         except Exception as exc:
             st.error(f"Não foi possível processar os PDFs: {exc}")
 
@@ -98,3 +99,53 @@ def render(lojas: list[str], parser: ParserRomaneio) -> None:
                     st.error(f"Não foi possível registrar a devolução: {exc}")
         else:
             st.success(f"Devolução registrada no histórico. ID interno: {st.session_state.registrado_id}")
+
+
+def _tab_conferencia() -> None:
+    if not st.session_state.comparacao:
+        st.info("Envie os três romaneios na aba 📥 Recebimento para iniciar a conferência.")
+        return
+
+    df = pd.DataFrame(st.session_state.comparacao)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("✅ OK", int((df["status"] == "OK").sum()))
+    c2.metric("🔴 Faltou", int((df["status"] == "FALTOU").sum()))
+    c3.metric("🟡 Excesso", int((df["status"] == "EXCESSO").sum()))
+    st.caption("Regra: Loja = Entrada CD + Entrada Anápolis. A origem que causou a diferença aparece nas colunas CD e Anápolis.")
+    st.dataframe(formatar_tabela(df), use_container_width=True, hide_index=True)
+
+
+def _tab_pendencias() -> None:
+    if not st.session_state.comparacao:
+        st.info("Nenhuma conferência foi executada ainda.")
+        return
+
+    df = pd.DataFrame(st.session_state.comparacao)
+    pendencias = df[df["status"] != "OK"]
+    if pendencias.empty:
+        st.success("Nenhuma divergência encontrada.")
+    else:
+        st.dataframe(formatar_tabela(pendencias), use_container_width=True, hide_index=True)
+
+
+def render(lojas: list[str], parser: ParserRomaneio) -> None:
+    st.header("📥 Recebimento, Conferência, Pendências e Tratativa")
+
+    n_pendencias = 0
+    if st.session_state.comparacao:
+        n_pendencias = int((pd.DataFrame(st.session_state.comparacao)["status"] != "OK").sum())
+
+    aba_recebimento, aba_conferencia, aba_pendencias, aba_tratativa = st.tabs([
+        "📥 Recebimento",
+        "🔎 Conferência",
+        f"⚠️ Pendências ({n_pendencias})" if n_pendencias else "⚠️ Pendências",
+        "📋 Tratativa",
+    ])
+    with aba_recebimento:
+        _tab_recebimento(lojas, parser)
+    with aba_conferencia:
+        _tab_conferencia()
+    with aba_pendencias:
+        _tab_pendencias()
+    with aba_tratativa:
+        _render_tratamento()
