@@ -1,5 +1,4 @@
-import re
-from datetime import date, datetime
+from datetime import date
 
 from .database import get_connection
 
@@ -37,6 +36,11 @@ def init_pedidos_db() -> None:
                     ON pedidos_devolucao(status);
                 CREATE INDEX IF NOT EXISTS idx_pedidos_devolucao_nota
                     ON pedidos_devolucao(numero_nota);
+
+                ALTER TABLE devolucoes
+                    ADD COLUMN IF NOT EXISTS pedido_id BIGINT;
+                CREATE INDEX IF NOT EXISTS idx_devolucoes_pedido_id
+                    ON devolucoes(pedido_id);
                 """
             )
         conn.commit()
@@ -176,5 +180,19 @@ def atualizar_status(pedido_id: int, status: str) -> None:
             cur.execute(
                 "UPDATE pedidos_devolucao SET status = %s, atualizado_em = NOW() WHERE id = %s",
                 (status, pedido_id),
+            )
+        conn.commit()
+
+
+def vincular_devolucao(pedido_id: int, devolucao_id: int) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE devolucoes SET pedido_id = %s WHERE id = %s",
+                (pedido_id, devolucao_id),
+            )
+            cur.execute(
+                "UPDATE pedidos_devolucao SET status = 'RECEBIDO', atualizado_em = NOW() WHERE id = %s",
+                (pedido_id,),
             )
         conn.commit()
