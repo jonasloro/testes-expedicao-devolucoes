@@ -2,25 +2,23 @@
  * AUTOMACAO DE PEDIDOS DE DEVOLUCAO
  *
  * Arquitetura:
- *   Gmail -> Google Apps Script -> PostgreSQL -> OutLog
+ *   Gmail -> Google Apps Script -> Neon Data API -> PostgreSQL -> OutLog
  *
- * Este script fica FORA do OutLog e nao usa a API de producao.
- * O destino do banco e definido apenas por Script Properties.
+ * IMPORTANTE:
+ * - Este script fica FORA do OutLog.
+ * - Nao usa a API de producao do OutLog.
+ * - Nao usa JDBC/PostgreSQL direto.
+ * - Usa HTTPS via Neon Data API.
+ * - Credenciais ficam apenas nas Script Properties.
  *
  * Propriedades obrigatorias:
- *   DB_URL
- *   DB_USER
- *   DB_PASS
+ *   DATA_API_URL
  *
- * O script:
- * - procura e-mails de devolucao;
- * - interpreta NF, loja, data, transportadora e lacres;
- * - considera volumes = quantidade de lacres;
- * - cria o pedido com status PENDENTE;
- * - evita duplicidade pelo ID da mensagem + nota/loja;
- * - nao grava o corpo completo do e-mail no banco;
- * - marca no Gmail o que foi processado ou precisa de revisao;
- * - executa no maximo uma instancia por vez.
+ * Propriedade opcional:
+ *   DATA_API_TOKEN
+ *
+ * Para o branch de teste com Data API sem RLS, DATA_API_TOKEN pode ficar vazio.
+ * Em producao, a recomendacao e habilitar autenticacao + RLS no Data API.
  */
 
 const CONFIG = Object.freeze({
@@ -31,52 +29,84 @@ const CONFIG = Object.freeze({
   LABEL_REVISAO: 'OutLog/Devoluções/Revisar',
   FUNCAO_GATILHO: 'processarEmailsDevolucao',
   INTERVALO_MINUTOS: 5,
+  TABELA_PEDIDOS: 'pedidos_devolucao',
+  TABELA_LACRES: 'pedido_devolucao_lacres',
 });
 
-function obterConfiguracaoBanco_() {
+function obterConfiguracaoApi_() {
   const props = PropertiesService.getScriptProperties();
-  const cfg = {
-    dbUrl: (props.getProperty('DB_URL') || '').trim(),
-    dbUser: (props.getProperty('DB_USER') || '').trim(),
-    dbPass: props.getProperty('DB_PASS') || '',
-  };
+  const baseUrl = (props.getProperty('DATA_API_URL') || '').trim().replace(/\/$/, '');
+  const token = (props.getProperty('DATA_API_TOKEN') || '').trim();
 
-  if (!cfg.dbUrl || !cfg.dbUser || !cfg.dbPass) {
+  if (!baseUrl) {
     throw new Error(
-      'Configure DB_URL, DB_USER e DB_PASS em Project Settings > Script properties.'
+      'Configure DATA_API_URL em Project Settings > Script properties.'
     );
   }
 
-  return cfg;
+  return { baseUrl, token };
 }
 
-function abrirConexaoBanco_() {
-  const cfg = obterConfiguracaoBanco_();
-  return Jdbc.getConnection(cfg.dbUrl, cfg.dbUser, cfg.dbPass);
-}
+function dataApiRequest_(endpoint, method, body, prefer) {
+  const cfg = obterConfiguracaoApi_();
+  const url = cfg.baseUrl + '/' + String(endpoint || '').replace(/^\//, '');
 
-/**
- * Teste seguro: abre a conexao e executa SELECT 1.
- * Nao grava nem altera dados.
- */
-function testarConexaoBanco() {
-  const conn = abrirConexaoBanco_();
+  const headers = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+
+  if (cfg.token) {
+    headers.Authorization = 'Bearer ' + cfg.token;
+  }
+
+  if (prefer) headers.Prefer = prefer;
+
+  const options = {
+    method: method || 'get',
+    headers: headers,
+    muteHttpExceptions: true,
+  };
+
+  if (body !== undefined && body !== null) {
+    options.payload = JSON.stringify(body);
+  }
+
+  const response = UrlFetchApp.fetch(url, options);
+  const status = response.getResponseCode();
+  const text = response.getContentText() || '';
+
+  if (status < 200 || status >= 300) {
+    throw new Error(
+      'Neon Data API respondeu HTTP ' + status + ': ' + text.substring(0, 800)
+    );
+  }
+
+  if (!text.trim()) return null;
+
   try {
-    const stmt = conn.createStatement();
-    const rs = stmt.executeQuery('SELECT 1');
-    if (!rs.next()) throw new Error('O banco nao retornou resposta.');
-    console.log('Conexao com PostgreSQL OK.');
-    rs.close();
-    stmt.close();
-  } finally {
-    conn.close();
+    return JSON.parse(text);
+  } catch (err) {
+    return text;
   }
 }
 
 /**
- * Processa os e-mails automaticamente.
- * Use manualmente uma vez para autorizar o projeto e validar o fluxo.
+ * Teste seguro: consulta a API e nao grava dados.
  */
+function testarDataApi() {
+  const data = dataApiRequest_(
+    CONFIG.TABELA_PEDIDOS + '?select=id&limit=1',
+    'get'
+  );
+  console.log('Neon Data API OK. Resposta: ' + JSON.stringify(data));
+}
+
+// Alias para facilitar a troca no projeto do Claude.
+function testarConexaoBanco() {
+  testarDataApi();
+}
+
 function processarEmailsDevolucao() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) {
@@ -84,7 +114,6 @@ function processarEmailsDevolucao() {
     return;
   }
 
-  let conn = null;
   try {
     const processado = obterOuCriarLabel_(CONFIG.LABEL_PROCESSADO);
     const revisar = obterOuCriarLabel_(CONFIG.LABEL_REVISAO);
@@ -95,14 +124,12 @@ function processarEmailsDevolucao() {
     let revisao = 0;
     let ignorados = 0;
 
-    conn = abrirConexaoBanco_();
-
     for (const thread of threads) {
       const labels = thread.getLabels().map(label => label.getName());
-      const jaEmRevisao = labels.indexOf(CONFIG.LABEL_REVISAO) >= 0;
-      const jaProcessado = labels.indexOf(CONFIG.LABEL_PROCESSADO) >= 0;
-
-      if (jaEmRevisao || jaProcessado) {
+      if (
+        labels.indexOf(CONFIG.LABEL_PROCESSADO) >= 0 ||
+        labels.indexOf(CONFIG.LABEL_REVISAO) >= 0
+      ) {
         ignorados++;
         continue;
       }
@@ -110,7 +137,7 @@ function processarEmailsDevolucao() {
       for (const message of thread.getMessages()) {
         const gmailId = message.getId();
 
-        if (foiProcessado(conn, gmailId)) {
+        if (foiProcessado_(gmailId)) {
           processado.addToThread(thread);
           ignorados++;
           continue;
@@ -128,7 +155,7 @@ function processarEmailsDevolucao() {
           break;
         }
 
-        const resultado = criarPedido(conn, gmailId, assunto, dados);
+        const resultado = criarPedido_(gmailId, assunto, dados);
         processado.addToThread(thread);
 
         if (resultado.criado) criados++;
@@ -138,7 +165,6 @@ function processarEmailsDevolucao() {
 
     console.log(JSON.stringify({ criados, existentes, revisao, ignorados }));
   } finally {
-    if (conn) conn.close();
     lock.releaseLock();
   }
 }
@@ -147,9 +173,6 @@ function obterOuCriarLabel_(nome) {
   return GmailApp.getUserLabelByName(nome) || GmailApp.createLabel(nome);
 }
 
-/**
- * Remove gatilhos antigos desta mesma funcao e cria apenas um novo.
- */
 function criarGatilho() {
   for (const trigger of ScriptApp.getProjectTriggers()) {
     if (trigger.getHandlerFunction() === CONFIG.FUNCAO_GATILHO) {
@@ -162,126 +185,89 @@ function criarGatilho() {
     .everyMinutes(CONFIG.INTERVALO_MINUTOS)
     .create();
 
-  console.log('Gatilho criado para rodar a cada ' + CONFIG.INTERVALO_MINUTOS + ' minutos.');
-}
-
-function foiProcessado(conn, gmailId) {
-  const stmt = conn.prepareStatement(
-    'SELECT id FROM pedidos_devolucao WHERE origem_email_id = ? LIMIT 1'
+  console.log(
+    'Gatilho criado para rodar a cada ' + CONFIG.INTERVALO_MINUTOS + ' minutos.'
   );
-  stmt.setString(1, gmailId);
-  const rs = stmt.executeQuery();
-  const encontrado = rs.next();
-  rs.close();
-  stmt.close();
-  return encontrado;
 }
 
-function registrarEmailPendente_(gmailId, assunto, dados, dataMensagem) {
-  console.log(JSON.stringify({
-    tipo: 'REVISAO',
-    gmailId: gmailId,
-    assunto: assunto,
-    numeroNota: dados.numeroNota,
-    loja: dados.loja,
-    lacres: dados.lacres.length,
-    dataMensagem: dataMensagem ? dataMensagem.toISOString() : null,
-  }));
+function foiProcessado_(gmailId) {
+  const filtro =
+    '?select=id&origem_email_id=eq.' + encodeURIComponent(gmailId) + '&limit=1';
+  const resultado = dataApiRequest_(CONFIG.TABELA_PEDIDOS + filtro, 'get');
+  return Array.isArray(resultado) && resultado.length > 0;
 }
 
-function criarPedido(conn, gmailId, assunto, dados) {
-  conn.setAutoCommit(false);
-  try {
-    // Primeira trava contra duplicidade: mesma mensagem do Gmail.
-    const porMensagem = conn.prepareStatement(
-      'SELECT id FROM pedidos_devolucao WHERE origem_email_id = ? LIMIT 1'
-    );
-    porMensagem.setString(1, gmailId);
-    const rsMensagem = porMensagem.executeQuery();
-    if (rsMensagem.next()) {
-      const idExistente = rsMensagem.getLong(1);
-      rsMensagem.close();
-      porMensagem.close();
-      conn.commit();
-      return { id: idExistente, criado: false };
-    }
-    rsMensagem.close();
-    porMensagem.close();
+function pedidoExistente_(numeroNota, loja) {
+  const query =
+    '?select=id' +
+    '&numero_nota=eq.' + encodeURIComponent(numeroNota) +
+    '&loja=eq.' + encodeURIComponent(loja) +
+    '&status=neq.CANCELADO' +
+    '&order=id.desc&limit=1';
 
-    // Segunda trava: mesma NF na mesma loja, desde que nao esteja cancelada.
-    const existente = conn.prepareStatement(
-      `SELECT id FROM pedidos_devolucao
-        WHERE numero_nota = ? AND loja = ? AND status <> ?
-        ORDER BY id DESC LIMIT 1`
-    );
-    existente.setString(1, dados.numeroNota);
-    existente.setString(2, dados.loja);
-    existente.setString(3, 'CANCELADO');
-    const rs = existente.executeQuery();
+  const resultado = dataApiRequest_(CONFIG.TABELA_PEDIDOS + query, 'get');
+  return Array.isArray(resultado) && resultado.length > 0
+    ? resultado[0]
+    : null;
+}
 
-    if (rs.next()) {
-      const pedidoIdExistente = rs.getLong(1);
-      rs.close();
-      existente.close();
-      conn.commit();
-      return { id: pedidoIdExistente, criado: false };
-    }
-
-    rs.close();
-    existente.close();
-
-    const insert = conn.prepareStatement(
-      `INSERT INTO pedidos_devolucao
-       (numero_nota, loja, data_coleta, transportadora, volumes, status,
-        origem_email_id, assunto_email, observacao)
-       VALUES (?, ?, ?, ?, ?, 'PENDENTE', ?, ?, ?)
-       RETURNING id`
-    );
-
-    insert.setString(1, dados.numeroNota);
-    insert.setString(2, dados.loja);
-    if (dados.dataColeta) insert.setString(3, dados.dataColeta);
-    else insert.setNull(3, 91); // java.sql.Types.DATE
-    insert.setString(4, dados.transportadora || '');
-    insert.setInt(5, dados.lacres.length);
-    insert.setString(6, gmailId);
-    insert.setString(7, assunto || '');
-    insert.setString(8, montarObservacaoCompacta_(dados));
-
-    const created = insert.executeQuery();
-    if (!created.next()) {
-      throw new Error('Nao foi possivel obter o ID do pedido criado.');
-    }
-
-    const pedidoId = created.getLong(1);
-    created.close();
-    insert.close();
-
-    const lacreStmt = conn.prepareStatement(
-      `INSERT INTO pedido_devolucao_lacres (pedido_id, lacre, descricao)
-       VALUES (?, ?, ?)
-       ON CONFLICT (pedido_id, lacre) DO NOTHING`
-    );
-
-    for (const lacre of dados.lacres) {
-      lacreStmt.setLong(1, pedidoId);
-      lacreStmt.setString(2, lacre.lacre);
-      lacreStmt.setString(3, lacre.descricao || '');
-      lacreStmt.addBatch();
-    }
-
-    lacreStmt.executeBatch();
-    lacreStmt.close();
-
-    conn.commit();
-    console.log('Pedido criado: ' + pedidoId);
-    return { id: pedidoId, criado: true };
-  } catch (err) {
-    conn.rollback();
-    throw err;
-  } finally {
-    conn.setAutoCommit(true);
+function criarPedido_(gmailId, assunto, dados) {
+  const porMensagem = foiProcessado_(gmailId);
+  if (porMensagem) {
+    return { id: null, criado: false };
   }
+
+  const existente = pedidoExistente_(dados.numeroNota, dados.loja);
+  if (existente) {
+    return { id: existente.id, criado: false };
+  }
+
+  const pedidoPayload = {
+    numero_nota: dados.numeroNota,
+    loja: dados.loja,
+    data_coleta: dados.dataColeta || null,
+    transportadora: dados.transportadora || '',
+    volumes: dados.lacres.length,
+    status: 'PENDENTE',
+    origem_email_id: gmailId,
+    assunto_email: assunto || '',
+    observacao: montarObservacaoCompacta_(dados),
+  };
+
+  const pedidoCriado = dataApiRequest_(
+    CONFIG.TABELA_PEDIDOS,
+    'post',
+    pedidoPayload,
+    'return=representation'
+  );
+
+  const pedido = Array.isArray(pedidoCriado)
+    ? pedidoCriado[0]
+    : pedidoCriado;
+
+  if (!pedido || !pedido.id) {
+    throw new Error(
+      'A Data API criou o pedido, mas nao devolveu o ID: ' +
+      JSON.stringify(pedidoCriado)
+    );
+  }
+
+  const lacresPayload = dados.lacres.map(lacre => ({
+    pedido_id: pedido.id,
+    lacre: lacre.lacre,
+    descricao: lacre.descricao || '',
+  }));
+
+  if (lacresPayload.length > 0) {
+    dataApiRequest_(
+      CONFIG.TABELA_LACRES,
+      'post',
+      lacresPayload,
+      'resolution=merge-duplicates,return=minimal'
+    );
+  }
+
+  return { id: pedido.id, criado: true };
 }
 
 function montarObservacaoCompacta_(dados) {
@@ -290,10 +276,29 @@ function montarObservacaoCompacta_(dados) {
     'Lacres: ' + dados.lacres.length + '.',
   ];
 
-  if (dados.transportadora) partes.push('Transportadora: ' + dados.transportadora + '.');
-  if (dados.dataColeta) partes.push('Data da coleta: ' + dados.dataColeta + '.');
+  if (dados.transportadora) {
+    partes.push('Transportadora: ' + dados.transportadora + '.');
+  }
+
+  if (dados.dataColeta) {
+    partes.push('Data da coleta: ' + dados.dataColeta + '.');
+  }
 
   return partes.join(' ');
+}
+
+function registrarEmailPendente_(gmailId, assunto, dados, dataMensagem) {
+  console.log(
+    JSON.stringify({
+      tipo: 'REVISAO',
+      gmailId: gmailId,
+      assunto: assunto,
+      numeroNota: dados.numeroNota,
+      loja: dados.loja,
+      lacres: dados.lacres.length,
+      dataMensagem: dataMensagem ? dataMensagem.toISOString() : null,
+    })
+  );
 }
 
 function analisarEmail(assunto, texto, remetente) {
@@ -303,32 +308,45 @@ function analisarEmail(assunto, texto, remetente) {
   const corpo = limparEncaminhamento(bruto);
   const fonte = assuntoTexto + '\n' + bruto + '\n' + corpo;
 
-  const numeroNota = primeiroGrupo([
-    /(?:NOTA\s+DE\s+SA[IÍ]DA|NOTA|NF|N[ÚU]MERO\s+DA\s+NOTA)\s*[:#-]?\s*(\d+)\b/i,
-    /\bDEVOLU(?:C|Ç)[AÃ]O\s+NF\s*(\d+)\b/i,
-    /\bSA[IÍ]DA\s+(\d+)\b/i,
-  ], fonte);
+  const numeroNota = primeiroGrupo(
+    [
+      /(?:NOTA\s+DE\s+SA[IÍ]DA|NOTA|NF|N[ÚU]MERO\s+DA\s+NOTA)\s*[:#-]?\s*(\d+)\b/i,
+      /\bDEVOLU(?:C|Ç)[AÃ]O\s+NF\s*(\d+)\b/i,
+      /\bSA[IÍ]DA\s+(\d+)\b/i,
+    ],
+    fonte
+  );
 
-  let loja = primeiroGrupo([
-    /^\s*De:\s*(?:Loja\s+)?Ger[eê]ncia\s+(.+?)(?:\s*<[^>]+>)?\s*$/im,
-    /^\s*De:\s*(?:Loja\s+)?(.+?)(?:\s*<[^>]+>)?\s*$/im,
-  ], bruto.split('\n').slice(0, 20).join('\n'));
+  let loja = primeiroGrupo(
+    [
+      /^\s*De:\s*(?:Loja\s+)?Ger[eê]ncia\s+(.+?)(?:\s*<[^>]+>)?\s*$/im,
+      /^\s*De:\s*(?:Loja\s+)?(.+?)(?:\s*<[^>]+>)?\s*$/im,
+    ],
+    bruto.split('\n').slice(0, 20).join('\n')
+  );
 
   if (!loja) loja = extrairNomeRemetente_(remetenteTexto);
   loja = limparNomeLoja_(loja);
 
-  let dataColeta = primeiroGrupo([
-    /(?:na|em)\s+data\s+(?:de\s+)?(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
-    /(?:saiu|coleta|recolhimento|retirada)[^\n]{0,80}(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
-  ], corpo);
+  let dataColeta = primeiroGrupo(
+    [
+      /(?:na|em)\s+data\s+(?:de\s+)?(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+      /(?:saiu|coleta|recolhimento|retirada)[^\n]{0,80}(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+    ],
+    corpo
+  );
+
   if (dataColeta) dataColeta = normalizarData(dataColeta);
 
   const transportadora = limparTexto(
-    primeiroGrupo([
-      /recolhido\s+pela\s+transportadora\s+([^,\n.]+)/i,
-      /transportadora\s*[:\-]\s*([^\n.]+)/i,
-      /pela\s+transportadora\s+([^,\n.]+)/i,
-    ], corpo)
+    primeiroGrupo(
+      [
+        /recolhido\s+pela\s+transportadora\s+([^,\n.]+)/i,
+        /transportadora\s*[:\-]\s*([^\n.]+)/i,
+        /pela\s+transportadora\s+([^,\n.]+)/i,
+      ],
+      corpo
+    )
   );
 
   return {
@@ -360,7 +378,8 @@ function extrairBlocosDeLacre(corpo) {
   const vistos = {};
   let atual = null;
 
-  const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
+  const inicioLacre =
+    /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
 
   for (const linhaOriginal of linhas) {
@@ -375,7 +394,11 @@ function extrairBlocosDeLacre(corpo) {
       atual = { lacre: match[1], partes: [] };
       if (match[2]) atual.partes.push(match[2]);
     } else if (atual) {
-      if (/^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i.test(linha)) {
+      if (
+        /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i.test(
+          linha
+        )
+      ) {
         finalizarLacre_(atual, resultados, vistos);
         atual = null;
       } else {
@@ -402,14 +425,14 @@ function limparEncaminhamento(texto) {
   const linhas = String(texto || '').replace(/\r/g, '').split('\n');
 
   for (let i = 0; i < linhas.length; i++) {
-    if (!/^\s*De:\s*/i.test(linhas[i])) continue;
-
-    const bloco = linhas.slice(i, i + 12).join('\n');
-    if (!/Date:\s*|Subject:\s*|To:\s*|Cc:\s*/i.test(bloco)) continue;
-
-    for (let j = i; j < linhas.length; j++) {
-      if (!linhas[j].trim()) {
-        return linhas.slice(j + 1).join('\n').trim();
+    if (/^\s*De:\s*/i.test(linhas[i])) {
+      const bloco = linhas.slice(i, i + 10).join('\n');
+      if (/Date:\s*|Subject:\s*|To:\s*|Cc:\s*/i.test(bloco)) {
+        for (let j = i; j < linhas.length; j++) {
+          if (!linhas[j].trim()) {
+            return linhas.slice(j + 1).join('\n').trim();
+          }
+        }
       }
     }
   }
@@ -419,8 +442,8 @@ function limparEncaminhamento(texto) {
 
 function primeiroGrupo(padroes, texto) {
   for (const regex of padroes) {
-    const m = String(texto || '').match(regex);
-    if (m) return (m[1] || '').trim();
+    const match = String(texto || '').match(regex);
+    if (match) return (match[1] || '').trim();
   }
   return '';
 }
