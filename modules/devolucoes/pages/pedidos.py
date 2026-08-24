@@ -8,10 +8,23 @@ from ..pedidos_database import atualizar_status, buscar_pedido, criar_pedido, li
 STATUS = ["Todos", "PENDENTE", "EM RECEBIMENTO", "RECEBIDO", "CONFERIDO", "CONCLUIDO", "CANCELADO"]
 
 
+def _formatar_status(status: str) -> str:
+    mapa = {
+        "PENDENTE": "🔵 Pendente",
+        "EM RECEBIMENTO": "🟡 Em recebimento",
+        "RECEBIDO": "🟢 Recebido",
+        "CONFERIDO": "🟢 Conferido",
+        "CONCLUIDO": "✅ Concluído",
+        "CANCELADO": "🔴 Cancelado",
+    }
+    return mapa.get(str(status).upper(), str(status))
+
+
 def _mostrar_pedido(pedido: dict) -> None:
-    st.subheader(f"Pedido de devolução #{pedido['id']}")
+    st.subheader(f"🔎 Inspeção da devolução #{pedido['id']}")
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Nota", pedido["numero_nota"])
+    c1.metric("Documento", pedido["numero_nota"])
     c2.metric("Loja", pedido["loja"] or "—")
     c3.metric("Volumes", int(pedido["volumes"] or 0))
     c4.metric("Lacres", len(pedido.get("lacres", [])))
@@ -22,35 +35,36 @@ def _mostrar_pedido(pedido: dict) -> None:
         f"{pedido['data_coleta'].strftime('%d/%m/%Y') if pedido.get('data_coleta') else 'Não informada'}"
     )
     c2.write(f"**Transportadora:** {pedido.get('transportadora') or 'Não informada'}")
-    st.write(f"**Status:** `{pedido['status']}`")
+    st.write(f"**Status:** {_formatar_status(pedido['status'])}")
 
     lacres = pedido.get("lacres", [])
     if lacres:
-        st.subheader("Lacres")
-        st.dataframe(
-            pd.DataFrame(
-                [{"Lacre": x["lacre"], "Conteúdo": x["descricao"] or "—"} for x in lacres]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+        with st.expander(f"🔒 Lacres ({len(lacres)})", expanded=True):
+            st.dataframe(
+                pd.DataFrame(
+                    [{"Lacre": x["lacre"], "Conteúdo": x["descricao"] or "—"} for x in lacres]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
     else:
         st.info("Nenhum lacre foi identificado neste pedido.")
 
     if pedido.get("observacao"):
-        st.subheader("Observação")
-        st.write(pedido["observacao"])
+        with st.expander("📨 Conteúdo original da solicitação", expanded=False):
+            st.write(pedido["observacao"])
 
-    novo_status = st.selectbox(
-        "Alterar status",
-        STATUS[1:],
-        index=STATUS[1:].index(pedido["status"]) if pedido["status"] in STATUS[1:] else 0,
-        key=f"pedido_status_{pedido['id']}",
-    )
-    if st.button("Salvar status", key=f"pedido_salvar_{pedido['id']}"):
-        atualizar_status(int(pedido["id"]), novo_status)
-        st.success("Status atualizado.")
-        st.rerun()
+    with st.expander("⚙️ Alterar status", expanded=False):
+        novo_status = st.selectbox(
+            "Novo status",
+            STATUS[1:],
+            index=STATUS[1:].index(pedido["status"]) if pedido["status"] in STATUS[1:] else 0,
+            key=f"pedido_status_{pedido['id']}",
+        )
+        if st.button("Salvar status", key=f"pedido_salvar_{pedido['id']}"):
+            atualizar_status(int(pedido["id"]), novo_status)
+            st.success("Status atualizado.")
+            st.rerun()
 
 
 def _mostrar_previa(dados: dict) -> None:
@@ -79,9 +93,6 @@ def render(lojas: list[str]) -> None:
     st.header("📦 Pedidos de Devolução")
     st.caption("A demanda nasce aqui. O recebimento físico acontece depois, usando este pedido como referência.")
 
-    # Estado da prévia: o Streamlit executa a página novamente a cada clique.
-    # Guardamos os dados interpretados para que o botão Confirmar exista na
-    # execução seguinte e realmente consiga criar o pedido.
     if "pedido_email_preview" not in st.session_state:
         st.session_state["pedido_email_preview"] = None
     if "pedido_criado_id" not in st.session_state:
@@ -166,23 +177,31 @@ def render(lojas: list[str]) -> None:
             st.info("Nenhum pedido encontrado.")
             return
 
-        dados = [
-            {
-                "Pedido": r["id"],
-                "Nota": r["numero_nota"],
-                "Loja": r["loja"],
-                "Data coleta": r["data_coleta"].strftime("%d/%m/%Y") if r.get("data_coleta") else "—",
-                "Transportadora": r["transportadora"] or "—",
-                "Volumes": r["volumes"],
-                "Lacres": r["total_lacres"],
-                "Status": r["status"],
-            }
-            for r in registros
-        ]
-        st.dataframe(pd.DataFrame(dados), use_container_width=True, hide_index=True)
+        dados_lista = []
+        for r in registros:
+            criado_em = r.get("criado_em")
+            dados_lista.append(
+                {
+                    "Emissão": criado_em.strftime("%d/%m/%Y") if criado_em else "—",
+                    "Documento": r["numero_nota"],
+                    "Loja": r["loja"],
+                    "Volumes": int(r["volumes"] or 0),
+                    "Status": _formatar_status(r["status"]),
+                }
+            )
 
-        opcoes = [f"#{r['id']} — Nota {r['numero_nota']} — {r['loja']}" for r in registros]
-        escolha = st.selectbox("Abrir pedido", opcoes, key="pedido_detalhe")
+        st.dataframe(
+            pd.DataFrame(dados_lista),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        opcoes = [f"#{r['id']} — NF {r['numero_nota']} — {r['loja']}" for r in registros]
+        escolha = st.selectbox(
+            "🔎 Inspecionar devolução",
+            opcoes,
+            key="pedido_detalhe",
+        )
         pedido_id = int(registros[opcoes.index(escolha)]["id"])
         pedido = buscar_pedido(pedido_id)
         if pedido:
