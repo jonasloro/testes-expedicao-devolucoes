@@ -10,10 +10,17 @@ from ..tratamento import (
     salvar_tratamentos_em_lote,
 )
 
+# AVARIA não é mais uma escolha manual: tudo que vem no romaneio oficial de
+# Anápolis já é registrado automaticamente como avaria pelo banco.
+DESTINOS_MANUAIS = [destino for destino in DESTINOS if destino != "AVARIA"]
+
 
 def render() -> None:
     st.header("📋 Tratamento da devolução")
-    st.caption("Tratativa em lote. Os destinos atuais são somente: Avaria, Estocar, Armazenar Porta-Palete e Armazenar — Rua 1.")
+    st.caption(
+        "Tratativa em lote. Peças vindas do romaneio de Anápolis são AVARIA automaticamente; "
+        "aqui você decide apenas o destino das peças recebidas no CD."
+    )
 
     registros = listar_devolucoes_para_tratamento()
     if not registros:
@@ -28,20 +35,18 @@ def render() -> None:
     itens = buscar_itens_devolucao(devolucao_id)
     tratadas = quantidades_tratadas(devolucao_id)
 
-    # Total disponível para tratativa = Total encontrado (Entrada CD + Anápolis),
-    # não apenas a Entrada CD — senão peças que só vieram no romaneio de
-    # Anápolis nunca poderiam ser tratadas.
     total_entrada = int(registro["total_pecas_entrada"] or 0)
     total_anapolis = int(registro.get("total_pecas_anapolis") or 0)
     total_encontrado = total_entrada + total_anapolis
     total_tratada = int(registro["pecas_tratadas"] or 0)
     restante_total = max(total_encontrado - total_tratada, 0)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Documento", registro["numero_documento"])
     c2.metric("Loja", registro["loja"] or "—")
-    c3.metric("Total encontrado (CD + Anápolis)", total_encontrado)
-    c4.metric("Restantes", restante_total)
+    c3.metric("Entrada CD", total_entrada)
+    c4.metric("Avarias automáticas", total_anapolis)
+    c5.metric("Restantes para decisão", restante_total)
 
     pendentes = []
     for item in itens:
@@ -51,9 +56,16 @@ def render() -> None:
             pendentes.append((item, restante))
 
     if pendentes:
-        opcoes_item = [f"{item['codigo_barras']} — {item['descricao']} — {item['grade']} — restante: {restante}" for item, restante in pendentes]
-        selecionados = st.multiselect("Itens que receberão a mesma tratativa", opcoes_item, key="trat_itens_lote")
-        destino = st.selectbox("Destino do lote", DESTINOS, key="trat_destino_lote")
+        opcoes_item = [
+            f"{item['codigo_barras']} — {item['descricao']} — {item['grade']} — restante: {restante}"
+            for item, restante in pendentes
+        ]
+        selecionados = st.multiselect(
+            "Itens que receberão a mesma tratativa",
+            opcoes_item,
+            key="trat_itens_lote",
+        )
+        destino = st.selectbox("Destino do lote", DESTINOS_MANUAIS, key="trat_destino_lote")
         observacao = st.text_input("Observação do lote", key="trat_obs_lote")
 
         if selecionados:
@@ -80,16 +92,22 @@ def render() -> None:
             if st.button("✅ Aplicar tratativa ao lote", type="primary"):
                 try:
                     lancamentos = []
-                    restante_para_distribuir = int(quantidade_parcial or total_selecionado) if not tratar_total else None
+                    restante_para_distribuir = (
+                        int(quantidade_parcial or total_selecionado)
+                        if not tratar_total
+                        else None
+                    )
                     for item, restante in escolhidos:
                         qtd = restante if tratar_total else min(restante, restante_para_distribuir or 0)
                         if qtd > 0:
-                            lancamentos.append({
-                                "devolucao_item_id": int(item["id"]),
-                                "quantidade": qtd,
-                                "destino": destino,
-                                "observacao": observacao,
-                            })
+                            lancamentos.append(
+                                {
+                                    "devolucao_item_id": int(item["id"]),
+                                    "quantidade": qtd,
+                                    "destino": destino,
+                                    "observacao": observacao,
+                                }
+                            )
                             if restante_para_distribuir is not None:
                                 restante_para_distribuir -= qtd
                                 if restante_para_distribuir <= 0:
