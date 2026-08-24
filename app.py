@@ -20,9 +20,17 @@ st.set_page_config(
     layout="wide",
 )
 
-preparar_banco()
-init_tratamento_db()
-init_pedidos_db()
+
+@st.cache_resource(show_spinner=False)
+def inicializar_bancos() -> bool:
+    """Inicializa as estruturas do banco apenas uma vez por instância do app."""
+    preparar_banco()
+    init_tratamento_db()
+    init_pedidos_db()
+    return True
+
+
+inicializar_bancos()
 
 st.title("📦 Centro de Tratamento de Devoluções")
 st.caption("Ambiente isolado de testes — novas alterações são desenvolvidas aqui antes de irem para o aplicativo oficial.")
