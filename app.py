@@ -6,15 +6,12 @@ from modules.devolucoes.pedidos_database import init_pedidos_db
 from modules.devolucoes.tratamento import init_tratamento_db
 from modules.devolucoes.pages import (
     anapolis as page_anapolis,
-    conferencia as page_conferencia,
     configuracoes as page_configuracoes,
     dashboard as page_dashboard,
     historico as page_historico,
     indicadores as page_indicadores,
     pedidos as page_pedidos,
-    pendencias as page_pendencias,
     recebimento as page_recebimento,
-    tratamento as page_tratamento,
 )
 
 st.set_page_config(
@@ -59,13 +56,13 @@ for key, value in {
     if key not in st.session_state:
         st.session_state[key] = value
 
+# A tela de Recebimento é o fluxo operacional principal.
+# Conferência, Pendências e Tratativa ficam agrupadas dentro dela como abas,
+# exatamente como no fluxo mais atual do aplicativo principal.
 PAGINAS = {
     "🏠 Dashboard": page_dashboard,
     "📦 Pedidos de Devolução": page_pedidos,
     "📥 Recebimento": page_recebimento,
-    "🔎 Conferência": page_conferencia,
-    "⚠️ Pendências": page_pendencias,
-    "📋 Aguardando decisão": page_tratamento,
     "🩹 Defeitos Anápolis": page_anapolis,
     "🕘 Histórico": page_historico,
     "📊 Indicadores": page_indicadores,
