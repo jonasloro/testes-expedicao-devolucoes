@@ -1,34 +1,41 @@
 # Automação Gmail -> Pedidos de Devolução
 
-Esta automação foi desenhada para ficar **fora do OutLog**. Ela não usa nem altera a API de produção do aplicativo.
+Esta automação fica **fora do OutLog** e não usa nem altera a API de produção do aplicativo.
 
 ## Arquitetura
 
-`Gmail -> Google Apps Script -> JDBC -> PostgreSQL -> OutLog`
+`Gmail -> Google Apps Script -> HTTPS -> Neon Data API -> PostgreSQL -> OutLog`
 
-O Google Apps Script lê mensagens de devolução e grava diretamente nas tabelas `pedidos_devolucao` e `pedido_devolucao_lacres`. O OutLog continua apenas lendo os pedidos.
+O Google Apps Script lê as mensagens do Gmail e grava os pedidos diretamente pelas rotas REST do Neon Data API. O OutLog continua consumindo as tabelas de pedidos.
 
-O serviço JDBC do Google Apps Script suporta PostgreSQL externo. Para bancos externos, é necessário permitir os IPs de origem do Apps Script no banco e usar TLS. Consulte a documentação oficial do Google antes de abrir a conexão.  
+O Data API é uma interface REST compatível com PostgREST e cada branch do Neon possui seu próprio endpoint. Para o branch de testes, a própria tela do Neon informa quando as tabelas estão disponíveis sem RLS. Em produção, a recomendação é usar autenticação + PostgreSQL RLS no Data API. cite turn790747search0turn257134search0
 
-## Antes de ativar
+## Configuração do Apps Script
 
 1. Criar um projeto em `script.google.com`.
 2. Copiar o conteúdo de `Code.gs` para o projeto.
 3. Em **Project Settings > Script properties**, configurar:
-   - `DB_URL`: `jdbc:postgresql://HOST:5432/BANCO?sslmode=require`
-   - `DB_USER`: usuário exclusivo da automação
-   - `DB_PASS`: senha desse usuário
-4. No Neon/PostgreSQL, permitir os IPs de origem do Apps Script conforme a documentação do Google.
-5. Executar `processarEmailsDevolucao()` manualmente uma primeira vez para autorizar Gmail e JDBC e testar a conexão.
-6. Executar `criarGatilho()` uma única vez. Ele cria a rotina automática de verificação.
+   - `DATA_API_URL`: a URL exibida em **Neon > branch > Data API > API URL**, terminando em `/rest/v1`.
+   - `DATA_API_TOKEN`: opcional no branch de testes quando a Data API estiver configurada sem RLS/autenticação; em produção deve ser usado o mecanismo de autenticação configurado no Data API.
+4. Salvar as propriedades.
+5. Executar `testarConexaoBanco()` uma vez. Essa função apenas faz um `GET` de teste e não grava dados.
+6. Executar `processarEmailsDevolucao()` manualmente uma vez para autorizar o Gmail e validar o fluxo completo.
+7. Executar `criarGatilho()` uma única vez. Ele remove gatilhos anteriores da mesma função e cria um gatilho de 5 minutos.
 
-## Segurança
+## O que não deve ser colocado no código
 
-- Nunca colocar usuário, senha ou connection string diretamente no `Code.gs`.
-- Usar um usuário PostgreSQL exclusivo para essa automação.
-- Esse usuário deve ter acesso somente às tabelas necessárias para pedidos de devolução.
-- Não reutilizar credenciais da API de produção do OutLog.
-- A deduplicação usa o ID da mensagem do Gmail em `origem_email_id`.
+- Senha de banco.
+- Connection string PostgreSQL.
+- Credenciais da API de produção do OutLog.
+- Tokens em arquivo versionado no GitHub.
+
+As credenciais/configurações ficam apenas nas Script Properties do Google Apps Script.
+
+## Segurança e produção
+
+A Data API expõe tabelas diretamente por HTTPS. O Neon recomenda autenticação e RLS para controlar o acesso aos dados; o branch de produção não deve ser colocado em operação pública com RLS desativado. cite turn790747search0turn790747search3
+
+A automação usa uma role de banco apenas como referência/migração de infraestrutura; a chamada efetiva do script é HTTP contra a Data API.
 
 ## Comportamento
 
@@ -42,8 +49,16 @@ Data e transportadora são opcionais.
 
 Volumes são calculados como **quantidade de lacres**, independentemente do número de volumes escrito no e-mail.
 
-E-mails que não puderem ser interpretados com segurança não viram pedidos incompletos; são marcados para revisão.
+O parser aceita, entre outros formatos:
 
-## Importante
+- `NOTA DE SAÍDA 352`;
+- `Devolução NF 170`;
+- `lacre 19152: infraestrutura`;
+- `19118: RH, financeiro...`;
+- descrições quebradas em várias linhas.
 
-A conexão JDBC é direta com o PostgreSQL e portanto não passa pela API de produção do OutLog. Isso mantém a automação de devoluções isolada do fluxo operacional existente.
+E-mails que não puderem ser interpretados com segurança não viram pedidos incompletos; recebem a etiqueta de revisão.
+
+A deduplicação usa o ID da mensagem do Gmail e também verifica NF + loja.
+
+O banco recebe somente os dados estruturados do pedido. O corpo completo do e-mail não é armazenado pela automação.
