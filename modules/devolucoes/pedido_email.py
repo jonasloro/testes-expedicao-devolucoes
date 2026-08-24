@@ -79,13 +79,25 @@ def analisar_email(texto: str, assunto: str = "") -> dict:
     # O texto "3 volumes" é apenas informativo e não é a fonte do total.
     lacres = []
     vistos = set()
-    padrao_lacre = re.compile(r"^\s*(\d{5,})\s*[-–—:]\s*(.+?)\s*$", flags=re.MULTILINE)
-    for match in padrao_lacre.finditer(corpo):
-        codigo = match.group(1).strip()
-        if codigo in vistos:
+    padroes_lacre = [
+        re.compile(r"^\s*(?:lacre[s]?\s*[:#-]?\s*)?(\d{4,})\s*[-–—:]\s*(.*?)\s*$", flags=re.IGNORECASE),
+        re.compile(r"^\s*lacre[s]?\s*[:#-]?\s*(\d{4,})\s*$", flags=re.IGNORECASE),
+    ]
+    for linha in corpo.splitlines():
+        linha_limpa = linha.strip()
+        if not linha_limpa:
             continue
-        vistos.add(codigo)
-        lacres.append({"lacre": codigo, "descricao": match.group(2).strip().rstrip(";.").strip()})
+        for padrao in padroes_lacre:
+            match = padrao.match(linha_limpa)
+            if not match:
+                continue
+            codigo = match.group(1).strip()
+            descricao = (match.group(2) or "").strip().rstrip(";.").strip()
+            if codigo in vistos:
+                break
+            vistos.add(codigo)
+            lacres.append({"lacre": codigo, "descricao": descricao})
+            break
 
     return {
         "numero_nota": numero_nota,
