@@ -17,7 +17,10 @@ def _mostrar_pedido(pedido: dict) -> None:
     c4.metric("Lacres", len(pedido.get("lacres", [])))
 
     c1, c2 = st.columns(2)
-    c1.write(f"**Data da coleta:** {pedido['data_coleta'].strftime('%d/%m/%Y') if pedido.get('data_coleta') else 'Não informada'}")
+    c1.write(
+        f"**Data da coleta:** "
+        f"{pedido['data_coleta'].strftime('%d/%m/%Y') if pedido.get('data_coleta') else 'Não informada'}"
+    )
     c2.write(f"**Transportadora:** {pedido.get('transportadora') or 'Não informada'}")
     st.write(f"**Status:** `{pedido['status']}`")
 
@@ -50,67 +53,118 @@ def _mostrar_pedido(pedido: dict) -> None:
         st.rerun()
 
 
+def _mostrar_previa(dados: dict) -> None:
+    st.subheader("Prévia do pedido")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Nota", dados["numero_nota"])
+    c2.metric("Loja", dados["loja"])
+    c3.metric("Volumes", len(dados["lacres"]))
+    c4.metric("Lacres", len(dados["lacres"]))
+
+    st.write(
+        f"**Data da coleta:** "
+        f"{dados['data_coleta'].strftime('%d/%m/%Y') if dados['data_coleta'] else 'Não informada'}"
+    )
+    st.write(f"**Transportadora:** {dados['transportadora'] or 'Não informada'}")
+
+    if not dados["lacres"]:
+        st.warning("Nenhum lacre foi identificado. Não crie o pedido até verificar o texto.")
+    else:
+        tabela_lacres = pd.DataFrame(dados["lacres"])
+        tabela_lacres.columns = ["Lacre", "Conteúdo"]
+        st.dataframe(tabela_lacres, use_container_width=True, hide_index=True)
+
+
 def render(lojas: list[str]) -> None:
     st.header("📦 Pedidos de Devolução")
     st.caption("A demanda nasce aqui. O recebimento físico acontece depois, usando este pedido como referência.")
 
+    # Estado da prévia: o Streamlit executa a página novamente a cada clique.
+    # Guardamos os dados interpretados para que o botão Confirmar exista na
+    # execução seguinte e realmente consiga criar o pedido.
+    if "pedido_email_preview" not in st.session_state:
+        st.session_state["pedido_email_preview"] = None
+    if "pedido_criado_id" not in st.session_state:
+        st.session_state["pedido_criado_id"] = None
+
     tab_lista, tab_email = st.tabs(["📋 Pedidos", "📨 Importar e-mail"])
 
     with tab_email:
-        st.write("Cole o conteúdo do e-mail recebido. O sistema ignora o bloco de encaminhamento e transforma apenas as informações úteis em um pedido.")
-        assunto = st.text_input("Assunto do e-mail", placeholder="NOTA DE SAÍDA 352", key="pedido_assunto")
+        st.write(
+            "Cole o conteúdo do e-mail recebido. O sistema ignora o bloco de encaminhamento "
+            "e transforma apenas as informações úteis em um pedido."
+        )
+        assunto = st.text_input(
+            "Assunto do e-mail",
+            placeholder="NOTA DE SAÍDA 352 ou Devolução NF 170",
+            key="pedido_assunto",
+        )
         email = st.text_area("Conteúdo do e-mail", height=300, key="pedido_email")
-        if st.button("⚙️ Interpretar e criar pedido", type="primary"):
+
+        if st.button("⚙️ Interpretar e-mail", type="primary", key="pedido_interpretar"):
             if not email.strip():
                 st.warning("Cole o conteúdo do e-mail primeiro.")
             else:
                 try:
                     dados = analisar_email(email, assunto)
-                    if not dados["numero_nota"]:
-                        st.error("Não consegui identificar o número da nota no e-mail.")
-                    elif not dados["loja"]:
-                        st.error("Não consegui identificar a loja no remetente do e-mail.")
-                    else:
-                        st.subheader("Prévia do pedido")
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Nota", dados["numero_nota"])
-                        c2.metric("Loja", dados["loja"])
-                        c3.metric("Volumes", len(dados["lacres"]))
-                        c4.metric("Lacres", len(dados["lacres"]))
-                        st.write(f"**Data da coleta:** {dados['data_coleta'].strftime('%d/%m/%Y') if dados['data_coleta'] else 'Não informada'}")
-                        st.write(f"**Transportadora:** {dados['transportadora'] or 'Não informada'}")
-                        if not dados["lacres"]:
-                            st.warning("Nenhum lacre foi identificado. Verifique o formato do e-mail antes de criar o pedido.")
-                        else:
-                            st.dataframe(pd.DataFrame(dados["lacres"]), use_container_width=True, hide_index=True)
-
-                        if st.button("✅ Confirmar criação do pedido", key="pedido_confirmar"):
-                            pedido_id = criar_pedido(
-                                numero_nota=dados["numero_nota"],
-                                loja=dados["loja"],
-                                data_coleta=dados["data_coleta"],
-                                transportadora=dados["transportadora"],
-                                volumes=len(dados["lacres"]),
-                                lacres=dados["lacres"],
-                                observacao=dados["corpo"],
-                                assunto_email=dados["assunto"],
-                            )
-                            st.success(f"Pedido de devolução #{pedido_id} criado.")
-                            st.session_state["pedido_criado_id"] = pedido_id
-                            st.rerun()
+                    st.session_state["pedido_email_preview"] = dados
+                    st.session_state["pedido_email_raw"] = email
+                    st.session_state["pedido_email_assunto"] = assunto
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Não foi possível interpretar o e-mail: {exc}")
+
+        dados = st.session_state.get("pedido_email_preview")
+        if dados:
+            if not dados["numero_nota"]:
+                st.error("Não consegui identificar o número da nota no e-mail.")
+            elif not dados["loja"]:
+                st.error("Não consegui identificar a loja no remetente do e-mail.")
+            else:
+                _mostrar_previa(dados)
+                if dados["lacres"]:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button(
+                            "✅ Confirmar criação do pedido",
+                            type="primary",
+                            key="pedido_confirmar",
+                        ):
+                            try:
+                                pedido_id = criar_pedido(
+                                    numero_nota=dados["numero_nota"],
+                                    loja=dados["loja"],
+                                    data_coleta=dados["data_coleta"],
+                                    transportadora=dados["transportadora"],
+                                    volumes=len(dados["lacres"]),
+                                    lacres=dados["lacres"],
+                                    observacao=dados["corpo"],
+                                    assunto_email=dados["assunto"],
+                                )
+                                st.session_state["pedido_criado_id"] = pedido_id
+                                st.session_state["pedido_email_preview"] = None
+                                st.session_state["pedido_email_raw"] = ""
+                                st.success(f"Pedido de devolução #{pedido_id} criado.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Não foi possível criar o pedido: {exc}")
+                    with c2:
+                        if st.button("🧹 Limpar prévia", key="pedido_limpar"):
+                            st.session_state["pedido_email_preview"] = None
+                            st.rerun()
 
     with tab_lista:
         filtro_status = st.selectbox("Status", STATUS, key="pedido_filtro_status")
         registros = listar_pedidos(filtro_status)
+
+        pedido_criado_id = st.session_state.get("pedido_criado_id")
+        if pedido_criado_id:
+            st.success(f"Pedido de devolução #{pedido_criado_id} criado e já disponível na lista abaixo.")
+            st.session_state["pedido_criado_id"] = None
+
         if not registros:
             st.info("Nenhum pedido encontrado.")
             return
-
-        pedido_criado_id = st.session_state.pop("pedido_criado_id", None)
-        if pedido_criado_id:
-            st.success(f"Pedido de devolução #{pedido_criado_id} criado e já disponível na lista abaixo.")
 
         dados = [
             {
