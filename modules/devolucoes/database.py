@@ -119,6 +119,11 @@ def init_db() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql)
+            # Remove qualquer sobra da tentativa anterior de usar trigger
+            # para avaria automática. A regra agora é aplicada diretamente
+            # dentro de registrar_conferencia().
+            cur.execute("DROP TRIGGER IF EXISTS trg_avaria_anapolis ON devolucao_itens")
+            cur.execute("DROP FUNCTION IF EXISTS registrar_avaria_anapolis()")
             cur.execute("ALTER TABLE devolucoes ADD COLUMN IF NOT EXISTS loja VARCHAR(255)")
             cur.execute("ALTER TABLE devolucoes ADD COLUMN IF NOT EXISTS arquivo_anapolis VARCHAR(500)")
             cur.execute("ALTER TABLE devolucoes ADD COLUMN IF NOT EXISTS total_pecas_anapolis INTEGER NOT NULL DEFAULT 0")
@@ -228,9 +233,9 @@ def registrar_conferencia(
                     ],
                 )
 
-                # Regra operacional: toda peça que aparece no romaneio oficial
-                # de Anápolis entra automaticamente como AVARIA. Isso elimina
-                # a necessidade de selecionar manualmente essas peças na tratativa.
+                # Toda peça que aparece no romaneio oficial de Anápolis entra
+                # automaticamente como AVARIA. A regra fica aqui, dentro da
+                # mesma transação, sem depender de trigger no PostgreSQL.
                 cur.execute(
                     """
                     INSERT INTO devolucao_tratamentos (
