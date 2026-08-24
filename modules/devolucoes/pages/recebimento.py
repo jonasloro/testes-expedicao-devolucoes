@@ -10,9 +10,11 @@ from .tratamento import render as _render_tratamento
 
 
 def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
-    st.write("Selecione um pedido de devolução quando existir. A conferência oficial considera Entrada CD + Entrada Anápolis.")
+    st.write("Selecione um pedido de devolução marcado como RECEBIDO. A conferência oficial considera Entrada CD + Entrada Anápolis.")
 
-    pedidos = [p for p in listar_pedidos() if p["status"] in {"PENDENTE", "EM RECEBIMENTO"}]
+    # Regra do fluxo: o pedido só entra no Recebimento depois que seu status
+    # operacional for alterado para RECEBIDO na tela de Pedidos de Devolução.
+    pedidos = [p for p in listar_pedidos() if str(p["status"]).upper() == "RECEBIDO"]
     opcoes_pedido = ["Nenhum pedido selecionado"] + [
         f"#{p['id']} — Nota {p['numero_nota']} — {p['loja']} — {p['volumes']} vol."
         for p in pedidos
