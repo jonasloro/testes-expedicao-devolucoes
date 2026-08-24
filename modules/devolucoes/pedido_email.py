@@ -76,28 +76,44 @@ def analisar_email(texto: str, assunto: str = "") -> dict:
     ).rstrip(" ,;.")
 
     # Regra operacional: cada lacre representa um volume.
-    # O texto "3 volumes" é apenas informativo e não é a fonte do total.
+    # A descrição do lacre pode ocupar várias linhas; todo o bloco entre
+    # este lacre e o próximo é tratado como a informação daquele volume.
     lacres = []
     vistos = set()
-    padroes_lacre = [
-        re.compile(r"^\s*(?:lacre[s]?\s*[:#-]?\s*)?(\d{4,})\s*[-–—:]\s*(.*?)\s*$", flags=re.IGNORECASE),
-        re.compile(r"^\s*lacre[s]?\s*[:#-]?\s*(\d{4,})\s*$", flags=re.IGNORECASE),
-    ]
-    for linha in corpo.splitlines():
-        linha_limpa = linha.strip()
-        if not linha_limpa:
+    padrao_inicio_lacre = re.compile(
+        r"^\s*(?:lacre[s]?\s*[:#-]?\s*)?(\d{4,})\s*[-–—:]\s*(.*)$",
+        flags=re.IGNORECASE,
+    )
+
+    linhas = [linha.strip() for linha in corpo.splitlines()]
+    atual = None
+    for linha in linhas:
+        if not linha:
             continue
-        for padrao in padroes_lacre:
-            match = padrao.match(linha_limpa)
-            if not match:
-                continue
-            codigo = match.group(1).strip()
-            descricao = (match.group(2) or "").strip().rstrip(";.").strip()
-            if codigo in vistos:
-                break
-            vistos.add(codigo)
-            lacres.append({"lacre": codigo, "descricao": descricao})
-            break
+
+        match = padrao_inicio_lacre.match(linha)
+        if match:
+            if atual is not None:
+                descricao = " ".join(atual["partes"]).strip().rstrip(";.").strip()
+                if atual["codigo"] not in vistos:
+                    vistos.add(atual["codigo"])
+                    lacres.append({"lacre": atual["codigo"], "descricao": descricao})
+
+            atual = {
+                "codigo": match.group(1).strip(),
+                "partes": [match.group(2).strip()] if match.group(2).strip() else [],
+            }
+            continue
+
+        # Depois que um lacre foi encontrado, linhas seguintes pertencem a ele
+        # até o próximo lacre. Isso cobre textos quebrados pelo encaminhamento.
+        if atual is not None:
+            atual["partes"].append(linha)
+
+    if atual is not None:
+        descricao = " ".join(atual["partes"]).strip().rstrip(";.").strip()
+        if atual["codigo"] not in vistos:
+            lacres.append({"lacre": atual["codigo"], "descricao": descricao})
 
     return {
         "numero_nota": numero_nota,
