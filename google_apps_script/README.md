@@ -8,7 +8,7 @@ Esta automação fica **fora do OutLog** e não usa nem altera a API de produç�
 
 O Google Apps Script lê as mensagens do Gmail e grava os pedidos diretamente pelas rotas REST do Neon Data API. O OutLog continua consumindo as tabelas de pedidos.
 
-O Data API é uma interface REST compatível com PostgREST e cada branch do Neon possui seu próprio endpoint. Para o branch de testes, a própria tela do Neon informa quando as tabelas estão disponíveis sem RLS. Em produção, a recomendação é usar autenticação + PostgreSQL RLS no Data API. cite turn790747search0turn257134search0
+O Data API é uma interface REST compatível com PostgREST e cada branch do Neon possui seu próprio endpoint. Para o branch de testes, a própria tela do Neon informa quando as tabelas estão disponíveis sem RLS. Em produção, a recomendação é usar autenticação + PostgreSQL RLS no Data API.
 
 ## Configuração do Apps Script
 
@@ -33,9 +33,9 @@ As credenciais/configurações ficam apenas nas Script Properties do Google Apps
 
 ## Segurança e produção
 
-A Data API expõe tabelas diretamente por HTTPS. O Neon recomenda autenticação e RLS para controlar o acesso aos dados; o branch de produção não deve ser colocado em operação pública com RLS desativado. cite turn790747search0turn790747search3
+A Data API expõe tabelas diretamente por HTTPS. O Neon recomenda autenticação e RLS para controlar o acesso aos dados. O branch de produção não deve ser colocado em operação pública com RLS desativado.
 
-A automação usa uma role de banco apenas como referência/migração de infraestrutura; a chamada efetiva do script é HTTP contra a Data API.
+A role `outlog_devolucoes_bot` continua útil para administração/migração do banco, mas a chamada efetiva desta automação é HTTP contra a Data API, não JDBC.
 
 ## Comportamento
 
