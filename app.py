@@ -2,7 +2,6 @@ import streamlit as st
 
 from modules.devolucoes.parser import ParserRomaneio
 from modules.devolucoes.services import preparar_banco
-from modules.devolucoes.auto_avaria import init_auto_avaria_db
 from modules.devolucoes.pedidos_database import init_pedidos_db
 from modules.devolucoes.tratamento import init_tratamento_db
 from modules.devolucoes.pages import (
@@ -24,7 +23,6 @@ st.set_page_config(
 preparar_banco()
 init_tratamento_db()
 init_pedidos_db()
-init_auto_avaria_db()
 
 st.title("📦 Centro de Tratamento de Devoluções")
 st.caption("Ambiente isolado de testes — novas alterações são desenvolvidas aqui antes de irem para o aplicativo oficial.")
