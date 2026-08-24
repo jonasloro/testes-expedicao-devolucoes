@@ -228,6 +228,27 @@ def registrar_conferencia(
                     ],
                 )
 
+                # Regra operacional: toda peça que aparece no romaneio oficial
+                # de Anápolis entra automaticamente como AVARIA. Isso elimina
+                # a necessidade de selecionar manualmente essas peças na tratativa.
+                cur.execute(
+                    """
+                    INSERT INTO devolucao_tratamentos (
+                        devolucao_id, devolucao_item_id, quantidade, destino, observacao
+                    )
+                    SELECT
+                        devolucao_id,
+                        id,
+                        quantidade_anapolis,
+                        'AVARIA',
+                        'Entrada proveniente do romaneio de Anápolis — avaria automática.'
+                    FROM devolucao_itens
+                    WHERE devolucao_id = %s
+                      AND quantidade_anapolis > 0
+                    """,
+                    (devolucao_id,),
+                )
+
             itens_ok = sum(item.get("status") == "OK" for item in resultado)
             itens_faltou = sum(item.get("status") == "FALTOU" for item in resultado)
             itens_excesso = sum(item.get("status") == "EXCESSO" for item in resultado)
