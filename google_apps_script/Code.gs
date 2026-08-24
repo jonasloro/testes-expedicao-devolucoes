@@ -1,24 +1,19 @@
 /**
  * AUTOMACAO DE PEDIDOS DE DEVOLUCAO
  *
- * Arquitetura:
- *   Gmail -> Google Apps Script -> Neon Data API -> PostgreSQL -> OutLog
+ * Gmail -> Google Apps Script -> Neon Auth -> Neon Data API -> PostgreSQL -> OutLog
  *
- * IMPORTANTE:
- * - Este script fica FORA do OutLog.
- * - Nao usa a API de producao do OutLog.
- * - Nao usa JDBC/PostgreSQL direto.
- * - Usa HTTPS via Neon Data API.
- * - Credenciais ficam apenas nas Script Properties.
+ * Este script fica FORA do OutLog e nao usa a API de producao.
+ * Nao usa JDBC/PostgreSQL direto.
+ * O Data API e acessado por HTTPS com JWT anonimo renovado automaticamente.
  *
- * Propriedades obrigatorias:
- *   DATA_API_URL
+ * Script Properties obrigatorias:
+ *   DATA_API_URL  = URL do Neon Data API, terminando em /neondb/rest/v1
+ *   NEON_AUTH_URL  = URL base do Neon Auth, terminando em /neondb/auth
  *
- * Propriedade opcional:
- *   DATA_API_TOKEN
- *
- * Para o branch de teste com Data API sem RLS, DATA_API_TOKEN pode ficar vazio.
- * Em producao, a recomendacao e habilitar autenticacao + RLS no Data API.
+ * Exemplo:
+ *   DATA_API_URL = https://...neon.tech/neondb/rest/v1
+ *   NEON_AUTH_URL = https://...neonauth...neon.tech/neondb/auth
  */
 
 const CONFIG = Object.freeze({
@@ -31,49 +26,114 @@ const CONFIG = Object.freeze({
   INTERVALO_MINUTOS: 5,
   TABELA_PEDIDOS: 'pedidos_devolucao',
   TABELA_LACRES: 'pedido_devolucao_lacres',
+  TOKEN_CACHE_SECONDS: 3000,
 });
 
 function obterConfiguracaoApi_() {
   const props = PropertiesService.getScriptProperties();
-  const baseUrl = (props.getProperty('DATA_API_URL') || '').trim().replace(/\/$/, '');
-  const token = (props.getProperty('DATA_API_TOKEN') || '').trim();
+  const dataApiUrl = (props.getProperty('DATA_API_URL') || '').trim().replace(/\/$/, '');
+  const authUrl = (props.getProperty('NEON_AUTH_URL') || '').trim().replace(/\/$/, '');
 
-  if (!baseUrl) {
+  if (!dataApiUrl) {
+    throw new Error('Configure DATA_API_URL nas Script Properties.');
+  }
+
+  if (!authUrl) {
+    throw new Error('Configure NEON_AUTH_URL nas Script Properties.');
+  }
+
+  return { dataApiUrl, authUrl };
+}
+
+function obterTokenAnonimo_() {
+  const cache = CacheService.getScriptCache();
+  const tokenCacheado = cache.get('NEON_ANON_JWT');
+  if (tokenCacheado) return tokenCacheado;
+
+  const cfg = obterConfiguracaoApi_();
+  const url = cfg.authUrl + '/token/anonymous';
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: '{}',
+    muteHttpExceptions: true,
+    headers: { Accept: 'application/json' },
+  });
+
+  const status = response.getResponseCode();
+  const text = response.getContentText() || '';
+
+  if (status < 200 || status >= 300) {
     throw new Error(
-      'Configure DATA_API_URL em Project Settings > Script properties.'
+      'Neon Auth nao conseguiu emitir token anonimo. HTTP ' +
+        status + ': ' +
+        text.substring(0, 800)
     );
   }
 
-  return { baseUrl, token };
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error('Resposta inesperada do Neon Auth: ' + text.substring(0, 800));
+  }
+
+  const token =
+    data.token ||
+    data.access_token ||
+    (data.data && (data.data.token || data.data.access_token));
+
+  if (!token) {
+    throw new Error(
+      'Neon Auth respondeu sem JWT. Resposta: ' + JSON.stringify(data).substring(0, 800)
+    );
+  }
+
+  cache.put('NEON_ANON_JWT', token, CONFIG.TOKEN_CACHE_SECONDS);
+  return token;
 }
 
 function dataApiRequest_(endpoint, method, body, prefer) {
   const cfg = obterConfiguracaoApi_();
-  const url = cfg.baseUrl + '/' + String(endpoint || '').replace(/^\//, '');
+  const token = obterTokenAnonimo_();
+  const url = cfg.dataApiUrl + '/' + String(endpoint || '').replace(/^\//, '');
 
   const headers = {
     Accept: 'application/json',
     'Content-Type': 'application/json',
+    Authorization: 'Bearer ' + token,
   };
-
-  if (cfg.token) {
-    headers.Authorization = 'Bearer ' + cfg.token;
-  }
 
   if (prefer) headers.Prefer = prefer;
 
-  const options = {
+  let response = UrlFetchApp.fetch(url, {
     method: method || 'get',
     headers: headers,
     muteHttpExceptions: true,
-  };
+    ...(body !== undefined && body !== null
+      ? { payload: JSON.stringify(body) }
+      : {}),
+  });
 
-  if (body !== undefined && body !== null) {
-    options.payload = JSON.stringify(body);
+  let status = response.getResponseCode();
+
+  // Se o token expirou, limpa o cache e tenta uma vez com outro token.
+  if (status === 401 || status === 403) {
+    CacheService.getScriptCache().remove('NEON_ANON_JWT');
+    const novoToken = obterTokenAnonimo_();
+    headers.Authorization = 'Bearer ' + novoToken;
+    response = UrlFetchApp.fetch(url, {
+      method: method || 'get',
+      headers: headers,
+      muteHttpExceptions: true,
+      ...(body !== undefined && body !== null
+        ? { payload: JSON.stringify(body) }
+        : {}),
+    });
+    status = response.getResponseCode();
   }
 
-  const response = UrlFetchApp.fetch(url, options);
-  const status = response.getResponseCode();
   const text = response.getContentText() || '';
 
   if (status < 200 || status >= 300) {
@@ -91,9 +151,7 @@ function dataApiRequest_(endpoint, method, body, prefer) {
   }
 }
 
-/**
- * Teste seguro: consulta a API e nao grava dados.
- */
+/** Teste seguro: pede JWT anonimo e consulta a Data API. Nao grava dados. */
 function testarDataApi() {
   const data = dataApiRequest_(
     CONFIG.TABELA_PEDIDOS + '?select=id&limit=1',
@@ -102,9 +160,13 @@ function testarDataApi() {
   console.log('Neon Data API OK. Resposta: ' + JSON.stringify(data));
 }
 
-// Alias para facilitar a troca no projeto do Claude.
 function testarConexaoBanco() {
   testarDataApi();
+}
+
+function testarTokenNeonAuth() {
+  const token = obterTokenAnonimo_();
+  console.log('JWT anonimo obtido com sucesso. Tamanho: ' + token.length);
 }
 
 function processarEmailsDevolucao() {
@@ -212,15 +274,10 @@ function pedidoExistente_(numeroNota, loja) {
 }
 
 function criarPedido_(gmailId, assunto, dados) {
-  const porMensagem = foiProcessado_(gmailId);
-  if (porMensagem) {
-    return { id: null, criado: false };
-  }
+  if (foiProcessado_(gmailId)) return { id: null, criado: false };
 
   const existente = pedidoExistente_(dados.numeroNota, dados.loja);
-  if (existente) {
-    return { id: existente.id, criado: false };
-  }
+  if (existente) return { id: existente.id, criado: false };
 
   const pedidoPayload = {
     numero_nota: dados.numeroNota,
@@ -241,14 +298,12 @@ function criarPedido_(gmailId, assunto, dados) {
     'return=representation'
   );
 
-  const pedido = Array.isArray(pedidoCriado)
-    ? pedidoCriado[0]
-    : pedidoCriado;
+  const pedido = Array.isArray(pedidoCriado) ? pedidoCriado[0] : pedidoCriado;
 
   if (!pedido || !pedido.id) {
     throw new Error(
       'A Data API criou o pedido, mas nao devolveu o ID: ' +
-      JSON.stringify(pedidoCriado)
+        JSON.stringify(pedidoCriado)
     );
   }
 
@@ -275,15 +330,8 @@ function montarObservacaoCompacta_(dados) {
     'Importado automaticamente do Gmail.',
     'Lacres: ' + dados.lacres.length + '.',
   ];
-
-  if (dados.transportadora) {
-    partes.push('Transportadora: ' + dados.transportadora + '.');
-  }
-
-  if (dados.dataColeta) {
-    partes.push('Data da coleta: ' + dados.dataColeta + '.');
-  }
-
+  if (dados.transportadora) partes.push('Transportadora: ' + dados.transportadora + '.');
+  if (dados.dataColeta) partes.push('Data da coleta: ' + dados.dataColeta + '.');
   return partes.join(' ');
 }
 
@@ -291,8 +339,8 @@ function registrarEmailPendente_(gmailId, assunto, dados, dataMensagem) {
   console.log(
     JSON.stringify({
       tipo: 'REVISAO',
-      gmailId: gmailId,
-      assunto: assunto,
+      gmailId,
+      assunto,
       numeroNota: dados.numeroNota,
       loja: dados.loja,
       lacres: dados.lacres.length,
@@ -335,7 +383,6 @@ function analisarEmail(assunto, texto, remetente) {
     ],
     corpo
   );
-
   if (dataColeta) dataColeta = normalizarData(dataColeta);
 
   const transportadora = limparTexto(
@@ -350,12 +397,12 @@ function analisarEmail(assunto, texto, remetente) {
   );
 
   return {
-    numeroNota: numeroNota,
-    loja: loja,
+    numeroNota,
+    loja,
     dataColeta: dataColeta || null,
-    transportadora: transportadora,
+    transportadora,
     lacres: extrairBlocosDeLacre(corpo),
-    corpo: corpo,
+    corpo,
   };
 }
 
@@ -377,9 +424,7 @@ function extrairBlocosDeLacre(corpo) {
   const resultados = [];
   const vistos = {};
   let atual = null;
-
-  const inicioLacre =
-    /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
+  const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
 
   for (const linhaOriginal of linhas) {
@@ -394,11 +439,7 @@ function extrairBlocosDeLacre(corpo) {
       atual = { lacre: match[1], partes: [] };
       if (match[2]) atual.partes.push(match[2]);
     } else if (atual) {
-      if (
-        /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i.test(
-          linha
-        )
-      ) {
+      if (/^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i.test(linha)) {
         finalizarLacre_(atual, resultados, vistos);
         atual = null;
       } else {
@@ -415,28 +456,21 @@ function finalizarLacre_(atual, resultados, vistos) {
   const codigo = limparTexto(atual.lacre);
   if (!codigo || vistos[codigo]) return;
   vistos[codigo] = true;
-  resultados.push({
-    lacre: codigo,
-    descricao: limparTexto(atual.partes.join(' ')),
-  });
+  resultados.push({ lacre: codigo, descricao: limparTexto(atual.partes.join(' ')) });
 }
 
 function limparEncaminhamento(texto) {
   const linhas = String(texto || '').replace(/\r/g, '').split('\n');
-
   for (let i = 0; i < linhas.length; i++) {
     if (/^\s*De:\s*/i.test(linhas[i])) {
       const bloco = linhas.slice(i, i + 10).join('\n');
       if (/Date:\s*|Subject:\s*|To:\s*|Cc:\s*/i.test(bloco)) {
         for (let j = i; j < linhas.length; j++) {
-          if (!linhas[j].trim()) {
-            return linhas.slice(j + 1).join('\n').trim();
-          }
+          if (!linhas[j].trim()) return linhas.slice(j + 1).join('\n').trim();
         }
       }
     }
   }
-
   return String(texto || '').trim();
 }
 
@@ -449,25 +483,13 @@ function primeiroGrupo(padroes, texto) {
 }
 
 function limparTexto(texto) {
-  return String(texto || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/[;,\.]+$/, '')
-    .trim();
+  return String(texto || '').replace(/\s+/g, ' ').trim().replace(/[;,\.]+$/, '').trim();
 }
 
 function normalizarData(texto) {
   const partes = String(texto).split('/');
   if (partes.length !== 3) return '';
-
   let ano = partes[2];
   if (ano.length === 2) ano = '20' + ano;
-
-  return (
-    ano +
-    '-' +
-    partes[1].padStart(2, '0') +
-    '-' +
-    partes[0].padStart(2, '0')
-  );
+  return ano + '-' + partes[1].padStart(2, '0') + '-' + partes[0].padStart(2, '0');
 }
