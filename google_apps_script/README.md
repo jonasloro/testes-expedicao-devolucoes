@@ -1,64 +1,52 @@
 # Automação Gmail -> Pedidos de Devolução
 
-Esta automação fica **fora do OutLog** e não usa nem altera a API de produção do aplicativo.
+Arquitetura final:
 
-## Arquitetura
+`Gmail -> Google Apps Script -> Neon Auth (JWT anônimo) -> Neon Data API -> PostgreSQL -> OutLog`
 
-`Gmail -> Google Apps Script -> HTTPS -> Neon Data API -> PostgreSQL -> OutLog`
-
-O Google Apps Script lê as mensagens do Gmail e grava os pedidos diretamente pelas rotas REST do Neon Data API. O OutLog continua consumindo as tabelas de pedidos.
-
-O Data API é uma interface REST compatível com PostgREST e cada branch do Neon possui seu próprio endpoint. Para o branch de testes, a própria tela do Neon informa quando as tabelas estão disponíveis sem RLS. Em produção, a recomendação é usar autenticação + PostgreSQL RLS no Data API.
+A automação fica fora do OutLog e não usa nem altera a API de produção.
 
 ## Configuração do Apps Script
 
-1. Criar um projeto em `script.google.com`.
-2. Copiar o conteúdo de `Code.gs` para o projeto.
-3. Em **Project Settings > Script properties**, configurar:
-   - `DATA_API_URL`: a URL exibida em **Neon > branch > Data API > API URL**, terminando em `/rest/v1`.
-   - `DATA_API_TOKEN`: opcional no branch de testes quando a Data API estiver configurada sem RLS/autenticação; em produção deve ser usado o mecanismo de autenticação configurado no Data API.
-4. Salvar as propriedades.
-5. Executar `testarConexaoBanco()` uma vez. Essa função apenas faz um `GET` de teste e não grava dados.
-6. Executar `processarEmailsDevolucao()` manualmente uma vez para autorizar o Gmail e validar o fluxo completo.
-7. Executar `criarGatilho()` uma única vez. Ele remove gatilhos anteriores da mesma função e cria um gatilho de 5 minutos.
+Em **Project Settings -> Script Properties**, configure:
 
-## O que não deve ser colocado no código
+- `DATA_API_URL`: a URL do Data API do branch, terminando em `/neondb/rest/v1`.
+- `NEON_AUTH_URL`: a URL base do Neon Auth, terminando em `/neondb/auth`.
 
-- Senha de banco.
-- Connection string PostgreSQL.
-- Credenciais da API de produção do OutLog.
-- Tokens em arquivo versionado no GitHub.
+O script solicita automaticamente um JWT anônimo em `POST /token/anonymous`, armazena temporariamente o token em cache e o renova quando necessário.
 
-As credenciais/configurações ficam apenas nas Script Properties do Google Apps Script.
+Não é necessário copiar ou guardar JWT manualmente.
 
-## Segurança e produção
+Para este projeto, a URL base do Neon Auth é formada removendo `/.well-known/jwks.json` da URL JWKS fornecida pelo Neon.
 
-A Data API expõe tabelas diretamente por HTTPS. O Neon recomenda autenticação e RLS para controlar o acesso aos dados. O branch de produção não deve ser colocado em operação pública com RLS desativado.
+## Configuração do banco
 
-A role `outlog_devolucoes_bot` continua útil para administração/migração do banco, mas a chamada efetiva desta automação é HTTP contra a Data API, não JDBC.
+No branch usado pela automação, execute:
 
-## Comportamento
+`google_apps_script/sql/neon_auth_anonymous.sql`
 
-O script cria automaticamente apenas pedidos que tenham:
+Esse SQL concede ao role `anonymous` acesso somente a `pedidos_devolucao`, `pedido_devolucao_lacres` e respectivas sequências.
 
-- número da nota;
-- loja identificada;
-- pelo menos um lacre.
+## Teste
 
-Data e transportadora são opcionais.
+1. Execute `testarTokenNeonAuth()`.
+2. Execute `testarConexaoBanco()`.
+3. Execute `processarEmailsDevolucao()` manualmente uma vez.
+4. Confirme o pedido no OutLog.
+5. Execute `criarGatilho()` apenas depois que os testes manuais passarem.
 
-Volumes são calculados como **quantidade de lacres**, independentemente do número de volumes escrito no e-mail.
+## Regras do parser
 
-O parser aceita, entre outros formatos:
+- Nota pode vir no assunto ou no corpo (`NF 170`, `Devolução NF 170`, `NOTA DE SAÍDA 352`, etc.).
+- Loja pode vir do `De:` ou do nome do remetente.
+- Data e transportadora são opcionais.
+- Cada lacre inicia um bloco e o texto continua até o próximo lacre.
+- `volumes = quantidade de lacres`.
+- Mensagens sem nota, loja ou lacre não criam pedido incompleto; recebem a etiqueta de revisão.
+- Duplicidade é evitada pelo ID da mensagem do Gmail e por nota + loja.
 
-- `NOTA DE SAÍDA 352`;
-- `Devolução NF 170`;
-- `lacre 19152: infraestrutura`;
-- `19118: RH, financeiro...`;
-- descrições quebradas em várias linhas.
+## Segurança
 
-E-mails que não puderem ser interpretados com segurança não viram pedidos incompletos; recebem a etiqueta de revisão.
-
-A deduplicação usa o ID da mensagem do Gmail e também verifica NF + loja.
-
-O banco recebe somente os dados estruturados do pedido. O corpo completo do e-mail não é armazenado pela automação.
+- Nenhuma senha ou JWT é armazenado no repositório.
+- O `OutLog-Distribox` principal não é modificado.
+- Para produção, o recomendado é usar autenticação + RLS no Data API, com permissões mínimas.
