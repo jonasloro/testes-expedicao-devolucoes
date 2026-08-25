@@ -2,7 +2,7 @@
 
 Arquitetura final:
 
-`Gmail -> Google Apps Script -> Neon Auth (JWT anônimo) -> Neon Data API -> PostgreSQL -> OutLog`
+`Gmail -> Google Apps Script -> Neon Data API (role anonymous) -> PostgreSQL -> OutLog`
 
 A automação fica fora do OutLog e não usa nem altera a API de produção.
 
@@ -11,13 +11,12 @@ A automação fica fora do OutLog e não usa nem altera a API de produção.
 Em **Project Settings -> Script Properties**, configure:
 
 - `DATA_API_URL`: a URL do Data API do branch, terminando em `/neondb/rest/v1`.
-- `NEON_AUTH_URL`: a URL base do Neon Auth, terminando em `/neondb/auth`.
 
-O script solicita automaticamente um JWT anônimo em `POST /token/anonymous`, armazena temporariamente o token em cache e o renova quando necessário.
-
-Não é necessário copiar ou guardar JWT manualmente.
-
-Para este projeto, a URL base do Neon Auth é formada removendo `/.well-known/jwks.json` da URL JWKS fornecida pelo Neon.
+Não usa Neon Auth nem JWT. O Data API do Neon já tem um mecanismo próprio pra
+requisições sem autenticação: toda chamada sem cabeçalho `Authorization` é
+executada automaticamente com o role do Postgres configurado em **Data API ->
+Settings -> Anonymous role** (por padrão, `anonymous`). O script só precisa
+chamar a URL do Data API direto — sem pedir nem guardar token nenhum.
 
 ## Configuração do banco
 
@@ -25,15 +24,16 @@ No branch usado pela automação, execute:
 
 `google_apps_script/sql/neon_auth_anonymous.sql`
 
-Esse SQL concede ao role `anonymous` acesso somente a `pedidos_devolucao`, `pedido_devolucao_lacres` e respectivas sequências.
+Esse SQL concede ao role `anonymous` acesso somente a `pedidos_devolucao`,
+`pedido_devolucao_lacres` e respectivas sequências — é esse mesmo role que o
+Data API usa quando a chamada não tem `Authorization`.
 
 ## Teste
 
-1. Execute `testarTokenNeonAuth()`.
-2. Execute `testarConexaoBanco()`.
-3. Execute `processarEmailsDevolucao()` manualmente uma vez.
-4. Confirme o pedido no OutLog.
-5. Execute `criarGatilho()` apenas depois que os testes manuais passarem.
+1. Execute `testarConexaoBanco()`.
+2. Execute `processarEmailsDevolucao()` manualmente uma vez.
+3. Confirme o pedido no OutLog.
+4. Execute `criarGatilho()` apenas depois que os testes manuais passarem.
 
 ## Regras do parser
 
@@ -47,6 +47,7 @@ Esse SQL concede ao role `anonymous` acesso somente a `pedidos_devolucao`, `pedi
 
 ## Segurança
 
-- Nenhuma senha ou JWT é armazenado no repositório.
+- Nenhuma senha ou token é armazenado no repositório.
 - O `OutLog-Distribox` principal não é modificado.
-- Para produção, o recomendado é usar autenticação + RLS no Data API, com permissões mínimas.
+- O role `anonymous` só tem permissão nas duas tabelas de pedidos — nada além disso.
+- Para produção, vale revisitar se esse nível de acesso (leitura/escrita sem autenticação nenhuma) é aceitável, ou se compensa reativar o Neon Auth com JWT mais pra frente.
