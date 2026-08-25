@@ -1,6 +1,8 @@
 import pandas as pd
+import requests
 import streamlit as st
 
+from ..parser import ParserRomaneio
 from ..pedido_email import analisar_email
 from ..pedidos_database import atualizar_status, buscar_pedido, criar_pedido, listar_pedidos
 
@@ -66,6 +68,36 @@ def _abrir_inspecao(pedido_id: int) -> None:
     if pedido.get("observacao"):
         with st.expander("📨 Conteúdo original da solicitação", expanded=False):
             st.text(pedido["observacao"])
+
+    st.markdown("---")
+    if pedido.get("arquivo_romaneio_url"):
+        st.subheader("📎 Romaneio anexado no e-mail — reconhecido automaticamente")
+        with st.spinner("Lendo o romaneio anexado..."):
+            try:
+                resposta = requests.get(pedido["arquivo_romaneio_url"], timeout=20)
+                resposta.raise_for_status()
+                analise = ParserRomaneio().analisar(resposta.content)
+
+                c1, c2 = st.columns(2)
+                c1.metric("Quantidade prevista (peças)", analise["total_pecas"])
+                c2.metric("Itens distintos", analise["total_itens"])
+
+                if analise["itens"]:
+                    tabela = pd.DataFrame(analise["itens"])[["codigo_barras", "descricao", "grade", "quantidade"]]
+                    tabela.columns = ["Código", "Produto", "Grade", "Quantidade"]
+                    st.dataframe(tabela, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("O PDF foi lido, mas nenhum item foi reconhecido nele — confira manualmente na Conferência.")
+            except Exception as exc:
+                st.warning(
+                    f"Esse pedido tem um romaneio anexado, mas não consegui ler automaticamente agora "
+                    f"({exc}). Pode seguir com o upload manual na Conferência."
+                )
+    else:
+        st.caption(
+            "📎 Nenhum romaneio veio anexado neste e-mail — suba o arquivo manualmente "
+            "na tela de Conferência quando for receber essa devolução."
+        )
 
     with st.expander("⚙️ Alterar status", expanded=False):
         novo_status = st.selectbox(
