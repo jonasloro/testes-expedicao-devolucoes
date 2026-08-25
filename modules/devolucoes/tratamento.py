@@ -221,3 +221,60 @@ def salvar_tratamentos_em_lote(devolucao_id: int, lancamentos: list[dict]) -> No
             )
 
         conn.commit()
+
+
+def listar_avarias(loja: str | None = None, data_inicio=None, data_fim=None):
+    """Lista todos os lançamentos de tratativa com destino AVARIA (peças com
+    defeito), já com dados da loja/documento/item. Como lê direto da mesma
+    tabela que a tratativa grava, qualquer AVARIA lançada na tela de
+    Devoluções aparece aqui automaticamente, sem sincronização extra."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            condicoes = ["dt.destino = 'AVARIA'"]
+            params: list = []
+            if loja:
+                condicoes.append("d.loja = %s")
+                params.append(loja)
+            if data_inicio:
+                condicoes.append("d.data_documento >= %s")
+                params.append(data_inicio)
+            if data_fim:
+                condicoes.append("d.data_documento <= %s")
+                params.append(data_fim)
+            where = " AND ".join(condicoes)
+            cur.execute(
+                f"""
+                SELECT
+                    dt.id, dt.quantidade, dt.observacao, dt.criado_em,
+                    d.id AS devolucao_id, d.numero_documento, d.loja, d.data_documento,
+                    i.codigo_barras, i.descricao, i.grade
+                FROM devolucao_tratamentos dt
+                JOIN devolucao_itens i ON i.id = dt.devolucao_item_id
+                JOIN devolucoes d ON d.id = dt.devolucao_id
+                WHERE {where}
+                ORDER BY d.data_documento DESC, dt.criado_em DESC
+                """,
+                params,
+            )
+            return cur.fetchall()
+
+
+def indicadores_avarias_por_loja():
+    """Total de peças em avaria e de devoluções distintas com avaria, por
+    loja — base do ranking de taxa de avaria na tela de Indicadores."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    d.loja,
+                    COALESCE(SUM(dt.quantidade), 0) AS total_avaria,
+                    COUNT(DISTINCT d.id) AS devolucoes_com_avaria
+                FROM devolucao_tratamentos dt
+                JOIN devolucoes d ON d.id = dt.devolucao_id
+                WHERE dt.destino = 'AVARIA'
+                GROUP BY d.loja
+                ORDER BY total_avaria DESC
+                """
+            )
+            return cur.fetchall()
