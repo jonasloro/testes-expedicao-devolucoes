@@ -41,6 +41,11 @@ def init_pedidos_db() -> None:
                     ADD COLUMN IF NOT EXISTS pedido_id BIGINT;
                 CREATE INDEX IF NOT EXISTS idx_devolucoes_pedido_id
                     ON devolucoes(pedido_id);
+
+                ALTER TABLE pedidos_devolucao
+                    ADD COLUMN IF NOT EXISTS arquivo_romaneio_url TEXT;
+                ALTER TABLE pedidos_devolucao
+                    ADD COLUMN IF NOT EXISTS arquivo_romaneio_nome VARCHAR(255);
                 """
             )
         conn.commit()
