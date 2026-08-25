@@ -1,20 +1,20 @@
 /**
  * AUTOMACAO DE PEDIDOS DE DEVOLUCAO
  *
- * Gmail -> Google Apps Script -> Neon Data API -> PostgreSQL -> OutLog
+ * Gmail -> Google Apps Script -> Neon Auth (token anonimo) -> Neon Data API -> PostgreSQL -> OutLog
  *
  * Este script fica FORA do OutLog e nao usa a API de producao.
  * Nao usa JDBC/PostgreSQL direto.
- * O Data API e acessado por HTTPS SEM autenticacao — requisicoes sem
- * cabecalho Authorization sao tratadas automaticamente pelo role
- * "anonymous" do Postgres (configuravel em Data API > Settings > Anonymous
- * role, no console do Neon). Nao usa Neon Auth/JWT.
+ * O Data API exige um JWT valido em toda chamada — mesmo pra role anonymous,
+ * o token precisa vir preenchido (GET /token/anonymous no Neon Auth).
  *
  * Script Properties obrigatorias:
  *   DATA_API_URL  = URL do Neon Data API, terminando em /neondb/rest/v1
+ *   NEON_AUTH_URL  = URL base do Neon Auth, terminando em /neondb/auth
  *
  * Exemplo:
  *   DATA_API_URL = https://...neon.tech/neondb/rest/v1
+ *   NEON_AUTH_URL = https://...neonauth...neon.tech/neondb/auth
  */
 
 const CONFIG = Object.freeze({
@@ -27,39 +27,87 @@ const CONFIG = Object.freeze({
   INTERVALO_MINUTOS: 5,
   TABELA_PEDIDOS: 'pedidos_devolucao',
   TABELA_LACRES: 'pedido_devolucao_lacres',
+  TOKEN_CACHE_SECONDS: 600,
 });
 
 function obterConfiguracaoApi_() {
   const props = PropertiesService.getScriptProperties();
   const dataApiUrl = (props.getProperty('DATA_API_URL') || '').trim().replace(/\/$/, '');
+  const authUrl = (props.getProperty('NEON_AUTH_URL') || '').trim().replace(/\/$/, '');
 
   if (!dataApiUrl) {
     throw new Error('Configure DATA_API_URL nas Script Properties.');
   }
 
-  return { dataApiUrl };
+  if (!authUrl) {
+    throw new Error('Configure NEON_AUTH_URL nas Script Properties.');
+  }
+
+  return { dataApiUrl, authUrl };
 }
 
 function obterTokenAnonimo_() {
-  // Nao usado mais: o Data API do Neon aceita requisicoes sem cabecalho
-  // Authorization e as trata automaticamente com o role "anonymous"
-  // (configuravel em Data API > Settings > Anonymous role). Mantido aqui
-  // só por compatibilidade com codigo antigo que possa chama-la.
-  return null;
+  const cache = CacheService.getScriptCache();
+  const tokenCacheado = cache.get('NEON_ANON_JWT');
+  if (tokenCacheado) return tokenCacheado;
+
+  const cfg = obterConfiguracaoApi_();
+  const url = cfg.authUrl + '/token/anonymous';
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: { Accept: 'application/json' },
+  });
+
+  const status = response.getResponseCode();
+  const text = response.getContentText() || '';
+
+  if (status < 200 || status >= 300) {
+    throw new Error(
+      'Neon Auth nao conseguiu emitir token anonimo. HTTP ' +
+        status + ': ' +
+        text.substring(0, 800)
+    );
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error('Resposta inesperada do Neon Auth: ' + text.substring(0, 800));
+  }
+
+  const token =
+    data.token ||
+    data.access_token ||
+    data.jwt ||
+    (data.data && (data.data.token || data.data.access_token || data.data.jwt));
+
+  if (!token) {
+    throw new Error(
+      'Neon Auth respondeu sem JWT. Resposta: ' + JSON.stringify(data).substring(0, 800)
+    );
+  }
+
+  cache.put('NEON_ANON_JWT', token, CONFIG.TOKEN_CACHE_SECONDS);
+  return token;
 }
 
 function dataApiRequest_(endpoint, method, body, prefer) {
   const cfg = obterConfiguracaoApi_();
+  const token = obterTokenAnonimo_();
   const url = cfg.dataApiUrl + '/' + String(endpoint || '').replace(/^\//, '');
 
   const headers = {
     Accept: 'application/json',
     'Content-Type': 'application/json',
+    Authorization: 'Bearer ' + token,
   };
 
   if (prefer) headers.Prefer = prefer;
 
-  const response = UrlFetchApp.fetch(url, {
+  let response = UrlFetchApp.fetch(url, {
     method: method || 'get',
     headers: headers,
     muteHttpExceptions: true,
@@ -68,7 +116,24 @@ function dataApiRequest_(endpoint, method, body, prefer) {
       : {}),
   });
 
-  const status = response.getResponseCode();
+  let status = response.getResponseCode();
+
+  // Se o token expirou/invalido, limpa o cache e tenta uma vez com outro token.
+  if (status === 401 || status === 403) {
+    CacheService.getScriptCache().remove('NEON_ANON_JWT');
+    const novoToken = obterTokenAnonimo_();
+    headers.Authorization = 'Bearer ' + novoToken;
+    response = UrlFetchApp.fetch(url, {
+      method: method || 'get',
+      headers: headers,
+      muteHttpExceptions: true,
+      ...(body !== undefined && body !== null
+        ? { payload: JSON.stringify(body) }
+        : {}),
+    });
+    status = response.getResponseCode();
+  }
+
   const text = response.getContentText() || '';
 
   if (status < 200 || status >= 300) {
@@ -86,7 +151,7 @@ function dataApiRequest_(endpoint, method, body, prefer) {
   }
 }
 
-/** Teste seguro: consulta a Data API sem token (role anonymous). Nao grava dados. */
+/** Teste seguro: pede token anonimo e consulta a Data API. Nao grava dados. */
 function testarDataApi() {
   const data = dataApiRequest_(
     CONFIG.TABELA_PEDIDOS + '?select=id&limit=1',
@@ -100,7 +165,8 @@ function testarConexaoBanco() {
 }
 
 function testarTokenNeonAuth() {
-  console.log('Nao usado mais — o Data API nao exige token. Rode testarConexaoBanco() direto.');
+  const token = obterTokenAnonimo_();
+  console.log('Token anonimo obtido com sucesso. Tamanho: ' + token.length);
 }
 
 function processarEmailsDevolucao() {
