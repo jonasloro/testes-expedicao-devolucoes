@@ -28,7 +28,37 @@ const CONFIG = Object.freeze({
   TABELA_PEDIDOS: 'pedidos_devolucao',
   TABELA_LACRES: 'pedido_devolucao_lacres',
   TOKEN_CACHE_SECONDS: 600,
+  PASTA_ROMANEIOS_DRIVE: 'OutLog - Romaneios de Devolução (auto)',
 });
+
+function obterOuCriarPastaRomaneios_() {
+  const pastas = DriveApp.getFoldersByName(CONFIG.PASTA_ROMANEIOS_DRIVE);
+  if (pastas.hasNext()) return pastas.next();
+  return DriveApp.createFolder(CONFIG.PASTA_ROMANEIOS_DRIVE);
+}
+
+/**
+ * Se o e-mail veio com um PDF anexado (o romaneio), salva uma cópia numa
+ * pasta própria do Drive dessa conta e deixa acessível por link — o OutLog
+ * baixa e lê esse PDF automaticamente na tela de inspeção do pedido. Se não
+ * tiver PDF anexado, retorna null e o pedido nasce sem romaneio vinculado
+ * (segue o fluxo manual de sempre).
+ */
+function salvarAnexoRomaneio_(message, numeroNota) {
+  const anexos = message.getAttachments({ includeInlineImages: false });
+  const pdf = anexos.filter(function (a) { return a.getContentType() === 'application/pdf'; })[0];
+  if (!pdf) return null;
+
+  const pasta = obterOuCriarPastaRomaneios_();
+  const sufixo = (numeroNota || 'sem-nota') + '_' + new Date().getTime();
+  const arquivo = pasta.createFile(pdf.copyBlob().setName('Romaneio_NF' + sufixo + '.pdf'));
+  arquivo.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  return {
+    url: 'https://drive.google.com/uc?export=download&id=' + arquivo.getId(),
+    nome: pdf.getName(),
+  };
+}
 
 function obterConfiguracaoApi_() {
   const props = PropertiesService.getScriptProperties();
@@ -217,7 +247,7 @@ function processarEmailsDevolucao() {
           break;
         }
 
-        const resultado = criarPedido_(gmailId, assunto, dados);
+        const resultado = criarPedido_(gmailId, assunto, dados, obterAnexoComFallback_(message, dados.numeroNota));
         processado.addToThread(thread);
 
         if (resultado.criado) criados++;
@@ -273,7 +303,16 @@ function pedidoExistente_(numeroNota, loja) {
     : null;
 }
 
-function criarPedido_(gmailId, assunto, dados) {
+function obterAnexoComFallback_(message, numeroNota) {
+  try {
+    return salvarAnexoRomaneio_(message, numeroNota);
+  } catch (err) {
+    console.log('Falha ao salvar anexo do romaneio (pedido segue sem anexo): ' + err);
+    return null;
+  }
+}
+
+function criarPedido_(gmailId, assunto, dados, anexo) {
   if (foiProcessado_(gmailId)) return { id: null, criado: false };
 
   const existente = pedidoExistente_(dados.numeroNota, dados.loja);
@@ -289,6 +328,8 @@ function criarPedido_(gmailId, assunto, dados) {
     origem_email_id: gmailId,
     assunto_email: assunto || '',
     observacao: montarObservacaoCompacta_(dados),
+    arquivo_romaneio_url: anexo ? anexo.url : null,
+    arquivo_romaneio_nome: anexo ? anexo.nome : null,
   };
 
   const pedidoCriado = dataApiRequest_(
