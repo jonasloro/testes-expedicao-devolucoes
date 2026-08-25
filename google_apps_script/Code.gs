@@ -394,7 +394,11 @@ function analisarEmail(assunto, texto, remetente) {
   const bruto = String(texto || '');
   const assuntoTexto = String(assunto || '');
   const remetenteTexto = String(remetente || '');
-  const corpo = limparEncaminhamento(bruto);
+  // E-mails podem chegar com VÁRIAS camadas de encaminhamento empilhadas
+  // (loja -> pessoa A -> pessoa B -> Trello -> pessoa C -> aqui). O corpo
+  // de verdade e o remetente de verdade (a loja) estão sempre na camada
+  // MAIS INTERNA — a última, não a primeira.
+  const corpo = extrairCorpoOriginal_(bruto);
   const fonte = assuntoTexto + '\n' + bruto + '\n' + corpo;
 
   const numeroNota = primeiroGrupo(
@@ -408,10 +412,10 @@ function analisarEmail(assunto, texto, remetente) {
 
   let loja = primeiroGrupo(
     [
-      /^\s*De:\s*(?:Loja\s+)?Ger[eê]ncia\s+(.+?)(?:\s*<[^>]+>)?\s*$/im,
-      /^\s*De:\s*(?:Loja\s+)?(.+?)(?:\s*<[^>]+>)?\s*$/im,
+      /^\s*(?:De|From):\s*(?:Loja\s+)?Ger[eê]ncia\s+(.+?)(?:\s*<[^>]+>)?\s*$/im,
+      /^\s*(?:De|From):\s*(?:Loja\s+)?(.+?)(?:\s*<[^>]+>)?\s*$/im,
     ],
-    bruto.split('\n').slice(0, 20).join('\n')
+    extrairNucleoParaLoja_(bruto)
   );
 
   if (!loja) loja = extrairNomeRemetente_(remetenteTexto);
@@ -445,6 +449,49 @@ function analisarEmail(assunto, texto, remetente) {
     lacres: extrairBlocosDeLacre(corpo),
     corpo,
   };
+}
+
+/** Marca genérica de "início de uma camada de encaminhamento" — cobre tanto
+ * o Gmail em português ("Mensagem encaminhada") quanto em inglês
+ * ("Forwarded message"), já que numa mesma cadeia de encaminhamentos reais
+ * observamos as duas formas misturadas. */
+var DELIMITADOR_ENCAMINHAMENTO_RE = /^-{3,}\s*(?:Forwarded message|Mensagem encaminhada)\s*-{3,}\s*$/im;
+
+/** Acha a última (mais interna) camada de encaminhamento e devolve os
+ * primeiros ~20 linhas a partir dali — é onde fica o cabeçalho "De:"/"From:"
+ * de quem realmente mandou o e-mail original (a loja), não de quem
+ * encaminhou por último.*/
+function extrairNucleoParaLoja_(bruto) {
+  const linhas = String(bruto || '').replace(/\r/g, '').split('\n');
+  let ultimoIndice = -1;
+  for (let i = 0; i < linhas.length; i++) {
+    if (DELIMITADOR_ENCAMINHAMENTO_RE.test(linhas[i])) ultimoIndice = i;
+  }
+  const inicio = ultimoIndice === -1 ? 0 : ultimoIndice + 1;
+  return linhas.slice(inicio, inicio + 20).join('\n');
+}
+
+/** Volta o corpo de verdade da mensagem original: pula todas as camadas de
+ * encaminhamento (não só a primeira) e o bloco de cabeçalho (De/From, Date,
+ * Subject, To, Cc...) da última camada, até a primeira linha em branco. */
+function extrairCorpoOriginal_(bruto) {
+  const texto = String(bruto || '').replace(/\r/g, '');
+  const linhas = texto.split('\n');
+  let ultimoIndice = -1;
+  for (let i = 0; i < linhas.length; i++) {
+    if (DELIMITADOR_ENCAMINHAMENTO_RE.test(linhas[i])) ultimoIndice = i;
+  }
+  if (ultimoIndice === -1) {
+    // Sem nenhuma camada de encaminhamento detectada: mantém o
+    // comportamento antigo (compatibilidade com e-mails simples).
+    return limparEncaminhamento(texto);
+  }
+  for (let j = ultimoIndice + 1; j < linhas.length; j++) {
+    if (!linhas[j].trim()) {
+      return linhas.slice(j + 1).join('\n').trim();
+    }
+  }
+  return linhas.slice(ultimoIndice + 1).join('\n').trim();
 }
 
 function extrairNomeRemetente_(remetente) {
