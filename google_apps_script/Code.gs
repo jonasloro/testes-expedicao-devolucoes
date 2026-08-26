@@ -548,6 +548,14 @@ function extrairBlocosDeLacre(corpo) {
   const listaNumerosPura = /^\s*\d{4,}(?:\s*,\s*\d{4,})+\s*\.?\s*$/;
   const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
+  const padraoSaudacao = /^(boa tarde|boa noite|bom dia|ol[aá]|prezad[oa]s?)[.,!]?\s*$/i;
+
+  // Quando os lacres vêm numa lista solta (sem descrição individual), a
+  // frase de texto livre logo ANTES da lista costuma descrever o conteúdo
+  // geral (ex.: "Saindo da loja duas bags com devolução de defeitos...").
+  // Guarda a última linha "de contexto" (não é lacre, não é continuação de
+  // lacre, não é saudação) pra usar como descrição compartilhada nesse caso.
+  let contexto = '';
 
   for (const linhaOriginal of linhas) {
     const linha = linhaOriginal.trim();
@@ -556,12 +564,13 @@ function extrairBlocosDeLacre(corpo) {
     const matchLista = linha.match(listaLacres);
     if (matchLista) {
       if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
+      const descricaoContexto = padraoSaudacao.test(contexto) ? '' : contexto;
       const numeros = matchLista[1].split(/,|\be\b/i).map(n => n.trim()).filter(Boolean);
       for (const num of numeros) {
         const codigo = limparTexto(num);
         if (codigo && !vistos[codigo]) {
           vistos[codigo] = true;
-          resultados.push({ lacre: codigo, descricao: '' });
+          resultados.push({ lacre: codigo, descricao: descricaoContexto });
         }
       }
       continue;
@@ -569,12 +578,13 @@ function extrairBlocosDeLacre(corpo) {
 
     if (listaNumerosPura.test(linha)) {
       if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
+      const descricaoContexto = padraoSaudacao.test(contexto) ? '' : contexto;
       const numeros = linha.replace(/\.\s*$/, '').split(',').map(n => n.trim()).filter(Boolean);
       for (const num of numeros) {
         const codigo = limparTexto(num);
         if (codigo && !vistos[codigo]) {
           vistos[codigo] = true;
-          resultados.push({ lacre: codigo, descricao: '' });
+          resultados.push({ lacre: codigo, descricao: descricaoContexto });
         }
       }
       continue;
@@ -591,9 +601,14 @@ function extrairBlocosDeLacre(corpo) {
       if (/^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i.test(linha)) {
         finalizarLacre_(atual, resultados, vistos);
         atual = null;
+        contexto = '';
       } else {
         atual.partes.push(linha);
       }
+    } else {
+      // Linha de texto livre, fora de qualquer bloco de lacre — vira o
+      // contexto candidato pra descrição de uma próxima lista solta.
+      contexto = linha;
     }
   }
 
