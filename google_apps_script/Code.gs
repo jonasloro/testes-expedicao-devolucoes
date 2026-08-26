@@ -552,6 +552,7 @@ function extrairBlocosDeLacre(corpo) {
   const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
   const padraoSaudacao = /^(boa tarde|boa noite|bom dia|ol[aá]|prezad[oa]s?)[.,!]?\s*$/i;
+  const padraoFechamento = /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i;
 
   // Quando os lacres vêm numa lista solta (sem descrição individual), a
   // frase de texto livre logo ANTES da lista costuma descrever o conteúdo
@@ -559,6 +560,11 @@ function extrairBlocosDeLacre(corpo) {
   // Guarda a última linha "de contexto" (não é lacre, não é continuação de
   // lacre, não é saudação) pra usar como descrição compartilhada nesse caso.
   let contexto = '';
+  // Acumula TODO texto livre do corpo (fora de qualquer bloco de lacre,
+  // saudação ou fechamento) — é o fallback final: se depois de tudo algum
+  // lacre ainda ficar sem descrição nenhuma, usa isso em vez de deixar
+  // vazio. Cobre formato que a gente nem previu ainda.
+  const textosLivres = [];
 
   for (const linhaOriginal of linhas) {
     // Remove marcador de lista (•, ●, ▪, ou "-"/"*" seguido de espaço) que o
@@ -605,7 +611,7 @@ function extrairBlocosDeLacre(corpo) {
       atual = { lacre: match[1], partes: [] };
       if (match[2]) atual.partes.push(match[2]);
     } else if (atual) {
-      if (/^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i.test(linha)) {
+      if (padraoFechamento.test(linha)) {
         finalizarLacre_(atual, resultados, vistos);
         atual = null;
         contexto = '';
@@ -614,12 +620,29 @@ function extrairBlocosDeLacre(corpo) {
       }
     } else {
       // Linha de texto livre, fora de qualquer bloco de lacre — vira o
-      // contexto candidato pra descrição de uma próxima lista solta.
+      // contexto candidato pra descrição de uma próxima lista solta, e
+      // também entra no acumulado geral pro fallback final.
       contexto = linha;
+      if (!padraoSaudacao.test(linha)) textosLivres.push(linha);
     }
   }
 
   if (atual) finalizarLacre_(atual, resultados, vistos);
+
+  // Fallback final: nenhuma das estratégias acima achou descrição
+  // específica pra algum lacre? Usa todo o texto livre do e-mail (o que
+  // sobrou fora de blocos de lacre/saudação/fechamento). Só fica vazio de
+  // verdade se o e-mail inteiro não tiver texto nenhum descrevendo o
+  // conteúdo — cobre qualquer formato que a gente ainda não previu.
+  if (textosLivres.length) {
+    const geral = limparTexto(textosLivres.join(' ')).slice(0, 500);
+    if (geral) {
+      for (const item of resultados) {
+        if (!item.descricao) item.descricao = geral;
+      }
+    }
+  }
+
   return resultados;
 }
 
