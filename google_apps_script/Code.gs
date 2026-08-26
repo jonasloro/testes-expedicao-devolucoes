@@ -396,6 +396,9 @@ function registrarEmailPendente_(gmailId, assunto, dados, dataMensagem) {
       dataMensagem: dataMensagem ? dataMensagem.toISOString() : null,
     })
   );
+  // Log do texto puro (limitado a 1500 caracteres) — se cair em revisão de
+  // novo, dá pra ver exatamente o que o Gmail entregou, sem chute.
+  console.log('CORPO_BRUTO: ' + JSON.stringify(String(dados.corpo || '').slice(0, 1500)));
 }
 
 function analisarEmail(assunto, texto, remetente) {
@@ -558,7 +561,11 @@ function extrairBlocosDeLacre(corpo) {
   let contexto = '';
 
   for (const linhaOriginal of linhas) {
-    const linha = linhaOriginal.trim();
+    // Remove marcador de lista (•, ●, ▪, ou "-"/"*" seguido de espaço) que o
+    // Gmail às vezes deixa ao converter uma lista HTML pra texto puro —
+    // sem isso, uma linha tipo "• 25697, 25696, ..." não batia com nenhum
+    // dos padrões abaixo, que esperam a linha começar direto pelo número.
+    const linha = linhaOriginal.trim().replace(/^[•●◦‣▪]\s*/, '').replace(/^[-*]\s+(?=\d)/, '');
     if (!linha) continue;
 
     const matchLista = linha.match(listaLacres);
