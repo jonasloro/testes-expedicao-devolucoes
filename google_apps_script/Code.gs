@@ -376,6 +376,9 @@ function montarObservacaoCompacta_(dados) {
     'Importado automaticamente do Gmail.',
     'Lacres: ' + dados.lacres.length + '.',
   ];
+  if (dados.notaGerada) {
+    partes.push('⚠️ Sem número de nota no e-mail — identificador gerado a partir do lacre.');
+  }
   if (dados.transportadora) partes.push('Transportadora: ' + dados.transportadora + '.');
   if (dados.dataColeta) partes.push('Data da coleta: ' + dados.dataColeta + '.');
   return partes.join(' ');
@@ -446,12 +449,29 @@ function analisarEmail(assunto, texto, remetente) {
     )
   );
 
+  const lacres = extrairBlocosDeLacre(corpo);
+
+  // Nem toda loja manda um número de nota/NF reconhecível — às vezes é só
+  // uma "nota de transferência" sem número, ou vem num formato totalmente
+  // fora do padrão. Nesse caso, em vez de travar em revisão manual (loja e
+  // lacre são as informações realmente confiáveis, isso a gente tem), gera
+  // um identificador próprio a partir do primeiro lacre — determinístico
+  // (mesmo e-mail sempre gera o mesmo código, não duplica) e claramente
+  // marcado como não sendo um NF oficial.
+  let numeroNotaFinal = numeroNota;
+  let notaGerada = false;
+  if (!numeroNotaFinal && loja && lacres.length > 0) {
+    numeroNotaFinal = 'TRANSF-' + lacres[0].lacre;
+    notaGerada = true;
+  }
+
   return {
-    numeroNota,
+    numeroNota: numeroNotaFinal,
+    notaGerada,
     loja,
     dataColeta: dataColeta || null,
     transportadora,
-    lacres: extrairBlocosDeLacre(corpo),
+    lacres,
     corpo,
   };
 }
@@ -522,6 +542,10 @@ function extrairBlocosDeLacre(corpo) {
   // "lacre 19152: infraestrutura" (um por linha, com descrição), que é
   // tratado pelo inicioLacre logo abaixo.
   const listaLacres = /^\s*lacres?\s*[:#-]?\s*(\d{4,}(?:\s*(?:,|\be\b)\s*\d{4,})+)\s*\.?\s*$/i;
+  // Lista de números "solta", numa linha própria, sem a palavra "lacre"
+  // do lado — normalmente vem depois de uma linha de texto tipo "Lacres
+  // contendo bags de bags:" que não bate com o padrão acima.
+  const listaNumerosPura = /^\s*\d{4,}(?:\s*,\s*\d{4,})+\s*\.?\s*$/;
   const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
 
@@ -533,6 +557,19 @@ function extrairBlocosDeLacre(corpo) {
     if (matchLista) {
       if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
       const numeros = matchLista[1].split(/,|\be\b/i).map(n => n.trim()).filter(Boolean);
+      for (const num of numeros) {
+        const codigo = limparTexto(num);
+        if (codigo && !vistos[codigo]) {
+          vistos[codigo] = true;
+          resultados.push({ lacre: codigo, descricao: '' });
+        }
+      }
+      continue;
+    }
+
+    if (listaNumerosPura.test(linha)) {
+      if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
+      const numeros = linha.replace(/\.\s*$/, '').split(',').map(n => n.trim()).filter(Boolean);
       for (const num of numeros) {
         const codigo = limparTexto(num);
         if (codigo && !vistos[codigo]) {
