@@ -222,6 +222,7 @@ function processarEmailsDevolucao() {
         labels.indexOf(CONFIG.LABEL_PROCESSADO) >= 0 ||
         labels.indexOf(CONFIG.LABEL_REVISAO) >= 0
       ) {
+        console.log('Ignorado (thread já rotulada Processado/Revisar): ' + thread.getFirstMessageSubject());
         ignorados++;
         continue;
       }
@@ -230,6 +231,7 @@ function processarEmailsDevolucao() {
         const gmailId = message.getId();
 
         if (foiProcessado_(gmailId)) {
+          console.log('Ignorado (gmailId já registrado no banco): ' + (message.getSubject() || '') + ' | id=' + gmailId);
           processado.addToThread(thread);
           ignorados++;
           continue;
@@ -512,12 +514,31 @@ function extrairBlocosDeLacre(corpo) {
   const resultados = [];
   const vistos = {};
   let atual = null;
+  // "Lacres: 14413 e 14414" (ou "14413, 14414 e 14415") — vários números na
+  // mesma linha, sem descrição individual pra cada um. Diferente do formato
+  // "lacre 19152: infraestrutura" (um por linha, com descrição), que é
+  // tratado pelo inicioLacre logo abaixo.
+  const listaLacres = /^\s*lacres?\s*[:#-]?\s*(\d{4,}(?:\s*(?:,|\be\b)\s*\d{4,})+)\s*\.?\s*$/i;
   const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
 
   for (const linhaOriginal of linhas) {
     const linha = linhaOriginal.trim();
     if (!linha) continue;
+
+    const matchLista = linha.match(listaLacres);
+    if (matchLista) {
+      if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
+      const numeros = matchLista[1].split(/,|\be\b/i).map(n => n.trim()).filter(Boolean);
+      for (const num of numeros) {
+        const codigo = limparTexto(num);
+        if (codigo && !vistos[codigo]) {
+          vistos[codigo] = true;
+          resultados.push({ lacre: codigo, descricao: '' });
+        }
+      }
+      continue;
+    }
 
     let match = linha.match(inicioLacre);
     if (!match) match = linha.match(inicioNumero);
