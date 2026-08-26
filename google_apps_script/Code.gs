@@ -19,7 +19,7 @@
 
 const CONFIG = Object.freeze({
   GMAIL_QUERY:
-    'newer_than:3d (subject:(devolucao OR "devolução" OR "nota de saida" OR "nota de saída" OR "NF") OR lacre)',
+    'newer_than:3d (subject:(devolucao OR "devolução" OR "nota de saida" OR "nota de saída" OR NF OR nota) OR lacre OR lacres)',
   MAX_THREADS: 50,
   LABEL_PROCESSADO: 'OutLog/Devoluções/Processado',
   LABEL_REVISAO: 'OutLog/Devoluções/Revisar',
