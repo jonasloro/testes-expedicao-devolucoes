@@ -18,8 +18,11 @@
  */
 
 const CONFIG = Object.freeze({
-  GMAIL_QUERY:
-    'newer_than:3d (subject:(devolucao OR "devolução" OR "nota de saida" OR "nota de saída" OR NF OR nota) OR lacre OR lacres)',
+  // Essa caixa é dedicada só a devolução — todo e-mail que chega aqui é
+  // candidato. Não filtra por palavra-chave (isso já causou e-mail real
+  // passar batido por não bater com o texto esperado); pega tudo recente e
+  // deixa analisarEmail() decidir se tem nota+loja+lacre reconhecíveis.
+  GMAIL_QUERY: 'newer_than:3d in:inbox',
   MAX_THREADS: 50,
   LABEL_PROCESSADO: 'OutLog/Devoluções/Processado',
   LABEL_REVISAO: 'OutLog/Devoluções/Revisar',
