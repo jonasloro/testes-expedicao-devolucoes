@@ -10,7 +10,7 @@ from .tratamento import render as _render_tratamento
 
 
 def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
-    st.write("Selecione um pedido de devolução marcado como RECEBIDO. A conferência oficial considera Entrada CD + Entrada Anápolis.")
+    st.write("Selecione um pedido de devolução marcado como RECEBIDO. A conferência considera Entrada CD + Entrada Anápolis (quando houver — nem toda devolução tem peça com defeito, então o Anápolis é opcional).")
 
     # Regra do fluxo: o pedido só entra no Recebimento depois que seu status
     # operacional for alterado para RECEBIDO na tela de Pedidos de Devolução.
@@ -51,21 +51,25 @@ def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
     with c2:
         pdf_entrada = st.file_uploader("2. Romaneio da entrada no CD", type=["pdf"], key="pdf_entrada")
     with c3:
-        pdf_anapolis = st.file_uploader("3. Romaneio da entrada em Anápolis", type=["pdf"], key="pdf_anapolis")
+        pdf_anapolis = st.file_uploader("3. Romaneio da entrada em Anápolis (opcional)", type=["pdf"], key="pdf_anapolis")
 
     pode_comparar = (
         loja_selecionada != "Selecione uma loja"
         and pdf_loja is not None
         and pdf_entrada is not None
-        and pdf_anapolis is not None
     )
 
-    if pode_comparar and st.button("🔎 Ler e comparar os três romaneios", type="primary"):
+    if pode_comparar and st.button("🔎 Ler e comparar os romaneios", type="primary"):
         try:
-            with st.spinner("Lendo os três documentos e montando a conferência..."):
+            with st.spinner("Lendo os romaneios e montando a conferência..."):
                 resultado_loja = parser.analisar(pdf_loja.getvalue())
                 resultado_entrada = parser.analisar(pdf_entrada.getvalue())
-                resultado_anapolis = parser.analisar(pdf_anapolis.getvalue())
+                if pdf_anapolis is not None:
+                    resultado_anapolis = parser.analisar(pdf_anapolis.getvalue())
+                else:
+                    # Sem romaneio de Anápolis — nem toda devolução tem peça
+                    # com defeito. Conta como zero, não trava a conferência.
+                    resultado_anapolis = {"itens": [], "total_pecas": 0, "total_itens": 0, "cabecalho": {}}
 
                 defeitos_anapolis = {}
                 for item in resultado_anapolis.get("itens", []):
@@ -85,12 +89,12 @@ def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
                 if pedido_selecionado:
                     st.session_state.pedido_recebimento_id = int(pedido_selecionado["id"])
 
-            st.success("Os três romaneios foram lidos e a conferência foi criada — veja o resultado na aba 🔎 Conferência.")
+            st.success("Os romaneios foram lidos e a conferência foi criada — veja o resultado na aba 🔎 Conferência.")
         except Exception as exc:
             st.error(f"Não foi possível processar os PDFs: {exc}")
 
-    if st.session_state.loja and st.session_state.entrada and st.session_state.anapolis_romaneio:
-        total_anapolis = int(st.session_state.anapolis_romaneio["total_pecas"] or 0)
+    if st.session_state.loja and st.session_state.entrada:
+        total_anapolis = int((st.session_state.anapolis_romaneio or {}).get("total_pecas") or 0)
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Documento", st.session_state.loja["cabecalho"].get("numero_documento") or "—")
         c2.metric("Loja", st.session_state.loja_selecionada or "—")
@@ -115,11 +119,11 @@ def _tab_recebimento(lojas: list[str], parser: ParserRomaneio) -> None:
                         data_documento=st.session_state.loja["cabecalho"].get("data_documento", ""),
                         arquivo_loja=pdf_loja.name,
                         arquivo_entrada=pdf_entrada.name,
-                        arquivo_anapolis=pdf_anapolis.name,
+                        arquivo_anapolis=pdf_anapolis.name if pdf_anapolis is not None else "",
                         resultado=st.session_state.comparacao or [],
                         total_pecas_loja=st.session_state.loja["total_pecas"],
                         total_pecas_entrada=st.session_state.entrada["total_pecas"],
-                        total_pecas_anapolis=st.session_state.anapolis_romaneio["total_pecas"],
+                        total_pecas_anapolis=(st.session_state.anapolis_romaneio or {}).get("total_pecas") or 0,
                         loja=st.session_state.loja_selecionada or "",
                     )
                     pedido_id = st.session_state.get("pedido_recebimento_id")
