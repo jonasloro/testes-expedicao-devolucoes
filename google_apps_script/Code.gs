@@ -572,12 +572,40 @@ function extrairBlocosDeLacre(corpo) {
   const textosLivres = [];
 
   for (const linhaOriginal of linhas) {
-    // Remove marcador de lista (•, ●, ▪, ou "-"/"*" seguido de espaço) que o
-    // Gmail às vezes deixa ao converter uma lista HTML pra texto puro —
-    // sem isso, uma linha tipo "• 25697, 25696, ..." não batia com nenhum
-    // dos padrões abaixo, que esperam a linha começar direto pelo número.
-    const linha = linhaOriginal.trim().replace(/^[•●◦‣▪]\s*/, '').replace(/^[-*]\s+(?=\d)/, '');
+    let linha = linhaOriginal.trim();
+    // Linha que é só um marcador de lista sozinho ("-" numa linha própria,
+    // separado do conteúdo — é como o Gmail às vezes quebra listas HTML
+    // ao exportar em texto puro) — sem conteúdo nenhum, pula direto.
+    if (/^[-*•●◦‣▪]$/.test(linha)) continue;
+    // Remove **negrito** em markdown: o Gmail converte texto em negrito do
+    // e-mail original ("Lacre: 123=45" em negrito, por exemplo) pra um
+    // par de asteriscos envolvendo a linha inteira ao exportar em texto
+    // puro — sem tirar isso, "*Lacre: 123=45*" não batia com nenhum
+    // padrão abaixo (todos esperam a linha começar direto por "lacre"
+    // ou pelo número, não por "*").
+    linha = linha.replace(/^\*+/, '').replace(/\*+$/, '').trim();
+    // Remove marcador de lista (•, ●, ▪, ou "-"/"*" seguido de espaço) que
+    // ainda sobrar colado no início, depois de já ter tirado o negrito.
+    linha = linha.replace(/^[•●◦‣▪]\s*/, '').replace(/^[-*]\s+(?=\d)/, '');
     if (!linha) continue;
+
+    // "0024423=20 0024424=20" — mais de um par lacre=quantidade na MESMA
+    // linha (viu acontecer quando duas linhas da lista original colam
+    // sem quebra ao exportar em texto puro). Se a linha inteira é só uma
+    // sequência desses pares, trata cada par como um lacre.
+    const matchVariosIguais = linha.match(/^(?:\d{4,}\s*=\s*\d+\s*)+$/);
+    if (matchVariosIguais) {
+      if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
+      const pares = linha.matchAll(/(\d{4,})\s*=\s*(\d+)/g);
+      for (const par of pares) {
+        const codigo = limparTexto(par[1]);
+        if (codigo && !vistos[codigo]) {
+          vistos[codigo] = true;
+          resultados.push({ lacre: codigo, descricao: par[2] + ' peças' });
+        }
+      }
+      continue;
+    }
 
     const matchLista = linha.match(listaLacres);
     if (matchLista) {
