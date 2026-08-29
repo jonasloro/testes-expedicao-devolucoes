@@ -549,10 +549,15 @@ function extrairBlocosDeLacre(corpo) {
   // do lado — normalmente vem depois de uma linha de texto tipo "Lacres
   // contendo bags de bags:" que não bate com o padrão acima.
   const listaNumerosPura = /^\s*\d{4,}(?:\s*,\s*\d{4,})+\s*\.?\s*$/;
+  const inicioLacreComQtd = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*=\s*(\d+)\s*$/i;
   const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
+  // Linha tipo "Demais lacre:" — menciona a palavra mas sem número nenhum.
+  // É só um separador visual dentro da lista, não é conteúdo de lacre
+  // nenhum — sem isso, ela virava continuação do lacre anterior aberto.
+  const separadorSemNumero = /^\s*(demais\s+)?lacres?\s*:?\s*$/i;
   const padraoSaudacao = /^(boa tarde|boa noite|bom dia|ol[aá]|prezad[oa]s?)[.,!]?\s*$/i;
-  const padraoFechamento = /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?(\s|$)|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o|Qualquer d[uú]vida)/i;
+  const padraoFechamento = /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?(\s|$)|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o|Qualquer d[uú]vida|Permanecemos à disposi[cç][aã]o)/i;
 
   // Quando os lacres vêm numa lista solta (sem descrição individual), a
   // frase de texto livre logo ANTES da lista costuma descrever o conteúdo
@@ -603,12 +608,22 @@ function extrairBlocosDeLacre(corpo) {
       continue;
     }
 
-    let match = linha.match(inicioLacre);
+    if (separadorSemNumero.test(linha)) {
+      // "Demais lacre:" (ou só "Lacre:", "Lacres:") sem número nenhum — é
+      // um separador visual dentro da lista, fecha o que estava aberto
+      // sem virar continuação nem abrir um lacre novo vazio.
+      if (atual) { finalizarLacre_(atual, resultados, vistos); atual = null; }
+      continue;
+    }
+
+    let match = linha.match(inicioLacreComQtd);
+    if (match) match = [match[0], match[1], match[2] + ' peças'];
+    if (!match) match = linha.match(inicioLacre);
     if (!match) match = linha.match(inicioNumero);
     if (!match) {
-      // "25458 = 44" — lacre e quantidade separados por "=" (a loja de
-      // Santos usa esse formato). "44" aqui é a quantidade de peças
-      // daquele lacre, não outro lacre.
+      // "25458 = 44" — lacre e quantidade separados por "=", sem a
+      // palavra "lacre" do lado (a loja de Santos usa esse formato).
+      // "44" aqui é a quantidade de peças daquele lacre, não outro lacre.
       const matchIgual = linha.match(/^\s*(\d{4,})\s*=\s*(\d+)\s*$/);
       if (matchIgual) match = [matchIgual[0], matchIgual[1], matchIgual[2] + ' peças'];
     }
