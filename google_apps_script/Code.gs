@@ -552,7 +552,7 @@ function extrairBlocosDeLacre(corpo) {
   const inicioLacre = /^\s*lacres?\s*[:#-]?\s*(\d{4,})\s*(?:[:\-–—]\s*)?(.*)$/i;
   const inicioNumero = /^\s*(\d{5,})\s*[-–—:]\s*(.+)$/i;
   const padraoSaudacao = /^(boa tarde|boa noite|bom dia|ol[aá]|prezad[oa]s?)[.,!]?\s*$/i;
-  const padraoFechamento = /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?$|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o)/i;
+  const padraoFechamento = /^(A devolu[cç][aã]o|A entrega|O recolhimento|Att\.?(\s|$)|Atenciosamente|Abra[cç]os|Fico à disposi[cç][aã]o|Qualquer d[uú]vida)/i;
 
   // Quando os lacres vêm numa lista solta (sem descrição individual), a
   // frase de texto livre logo ANTES da lista costuma descrever o conteúdo
@@ -605,6 +605,13 @@ function extrairBlocosDeLacre(corpo) {
 
     let match = linha.match(inicioLacre);
     if (!match) match = linha.match(inicioNumero);
+    if (!match) {
+      // "25458 = 44" — lacre e quantidade separados por "=" (a loja de
+      // Santos usa esse formato). "44" aqui é a quantidade de peças
+      // daquele lacre, não outro lacre.
+      const matchIgual = linha.match(/^\s*(\d{4,})\s*=\s*(\d+)\s*$/);
+      if (matchIgual) match = [matchIgual[0], matchIgual[1], matchIgual[2] + ' peças'];
+    }
 
     if (match) {
       if (atual) finalizarLacre_(atual, resultados, vistos);
